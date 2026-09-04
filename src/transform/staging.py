@@ -2,7 +2,6 @@ import os
 from dotenv import load_dotenv
 from databricks import sql
 
-# Load credentials from .env
 load_dotenv()
 
 SERVER_HOSTNAME = os.getenv("DATABRICKS_SERVER_HOSTNAME")
@@ -23,7 +22,6 @@ def load_raw_tables():
         print(f"[ERROR] Connection failed. Check your .env file: {e}")
         return
 
-    # Map target raw table name to file in landing volume
     raw_tables = {
         "college": "college_all.csv",
         "draft_history": "draft_history.csv",
@@ -34,8 +32,7 @@ def load_raw_tables():
 
     for table_name, file_name in raw_tables.items():
         print(f"[PROCESS] Creating raw table: nba_draft.raw.{table_name} from {file_name}...")
-        
-        # Load raw files directly into nba_draft.raw schema
+
         query = f"""
         CREATE OR REPLACE TABLE nba_draft.raw.{table_name}
         AS SELECT * FROM read_files(
