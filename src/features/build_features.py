@@ -14,7 +14,7 @@ def build_prospect_features():
     )
     cursor = connection.cursor()
 
-    print("[PROCESS] Building clean analytics.prospect_features with height-based position tiers...")
+    print("[PROCESS] Building clean analytics.prospect_features with college height fallbacks...")
 
     feature_table_sql = """
     CREATE OR REPLACE TABLE nba_draft.analytics.prospect_features AS
@@ -85,6 +85,7 @@ def build_prospect_features():
             CAST(c.col_3 AS INT) AS games_played_val, 
             c.col_2 AS conf, 
             c.col_66 AS birthdate_str,
+            c.col_26 AS height_str,                   -- col_26 = Listed Height string (e.g. '7-0', '6-11')
             c.true_bpm AS college_bpm,
             c.total_seasons,
             COALESCE(c.true_bpm - c.prev_bpm, 0.0) AS bpm_delta,
@@ -151,7 +152,18 @@ def build_prospect_features():
                 19.5
             ) AS age_at_draft,
 
-            COALESCE(CAST(cb.height_wo_shoes AS DOUBLE), 78.0) AS height_inches,
+            -- Height with fallback to Torvik listed height string parsing
+            COALESCE(
+                CAST(cb.height_wo_shoes AS DOUBLE),
+                CASE 
+                    WHEN c.height_str LIKE '%-%' THEN 
+                        (TRY_CAST(SPLIT(TRIM(c.height_str), '-')[0] AS DOUBLE) * 12.0) + 
+                         TRY_CAST(SPLIT(TRIM(c.height_str), '-')[1] AS DOUBLE)
+                    ELSE NULL
+                END,
+                78.0
+            ) AS height_inches,
+            
             CAST(cb.wingspan AS DOUBLE) AS wingspan_inches,
             CAST(cb.standing_reach AS DOUBLE) AS standing_reach_inches,
             CAST(cb.weight AS DOUBLE) AS weight_lbs,
