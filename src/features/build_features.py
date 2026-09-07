@@ -14,7 +14,7 @@ def build_prospect_features():
     )
     cursor = connection.cursor()
 
-    print("[PROCESS] Building deduplicated & cleaned analytics.prospect_features...")
+    print("[PROCESS] Building clean analytics.prospect_features with height-based position tiers...")
 
     feature_table_sql = """
     CREATE OR REPLACE TABLE nba_draft.analytics.prospect_features AS
@@ -35,15 +35,15 @@ def build_prospect_features():
     college_dedup AS (
         SELECT *,
             REGEXP_REPLACE(
-                REGEXP_REPLACE(LOWER(player_name), '\\\\b(jr|sr|ii|iii|iv)\\\\b', ''), 
+                REGEXP_REPLACE(LOWER(col_0), '\\\\b(jr|sr|ii|iii|iv)\\\\b', ''), 
                 '[^a-z0-9]', ''
             ) AS norm_college_name,
             ROW_NUMBER() OVER (
                 PARTITION BY REGEXP_REPLACE(
-                    REGEXP_REPLACE(LOWER(player_name), '\\\\b(jr|sr|ii|iii|iv)\\\\b', ''), 
+                    REGEXP_REPLACE(LOWER(col_0), '\\\\b(jr|sr|ii|iii|iv)\\\\b', ''), 
                     '[^a-z0-9]', ''
                 ), season 
-                ORDER BY CAST(`3` AS INT) DESC
+                ORDER BY CAST(col_3 AS INT) DESC
             ) as rank_per_season
         FROM nba_draft.staging.college
     ),
@@ -52,9 +52,9 @@ def build_prospect_features():
         SELECT 
             c.*,
             CAST(c.season AS INT) AS season_int,
-            CAST(c.`34` AS DOUBLE) AS bpm,
+            CAST(c.col_50 AS DOUBLE) AS true_bpm,
             COUNT(*) OVER (PARTITION BY c.norm_college_name) AS total_seasons,
-            LAG(CAST(c.`34` AS DOUBLE)) OVER (
+            LAG(CAST(c.col_50 AS DOUBLE)) OVER (
                 PARTITION BY c.norm_college_name ORDER BY CAST(c.season AS INT) ASC
             ) AS prev_bpm
         FROM college_dedup c
@@ -65,11 +65,29 @@ def build_prospect_features():
         SELECT 
             t.*,
             c.season_int,
-            c.`47`, c.`43`, c.`44`, c.`45`, c.`46`, c.`38`, c.`8`, c.`7`, c.`14`, c.`20`, c.`16`, c.`13`, c.`50`,
-            c.`6`, c.`28`, c.`3`, c.`2`, c.`63`,
-            c.bpm AS college_bpm,
+            
+            CAST(c.col_63 AS DOUBLE) AS pts_per_game,
+            CAST(c.col_59 AS DOUBLE) AS reb_per_game,
+            CAST(c.col_60 AS DOUBLE) AS ast_per_game,
+            CAST(c.col_61 AS DOUBLE) AS stl_per_game,
+            CAST(c.col_62 AS DOUBLE) AS blk_per_game,
+            CAST(c.col_54 AS DOUBLE) AS mp_per_game,
+            
+            CAST(c.col_8 AS DOUBLE) / 100.0 AS ts_pct_val,
+            CAST(c.col_7 AS DOUBLE) / 100.0 AS efg_pct_val,
+            CAST(c.col_15 AS DOUBLE) AS ft_pct_val,
+            CAST(c.col_20 AS DOUBLE) AS three_pt_att,
+            CAST(c.col_17 AS DOUBLE) AS two_pt_att,
+            CAST(c.col_24 AS DOUBLE) / 100.0 AS ftr_val,
+            CAST(c.col_35 AS DOUBLE) AS ast_to_ratio_val,
+
+            CAST(c.col_6 AS DOUBLE) AS usage_pct_val,
+            CAST(c.col_3 AS INT) AS games_played_val, 
+            c.col_2 AS conf, 
+            c.col_66 AS birthdate_str,
+            c.true_bpm AS college_bpm,
             c.total_seasons,
-            COALESCE(c.bpm - c.prev_bpm, 0.0) AS bpm_delta,
+            COALESCE(c.true_bpm - c.prev_bpm, 0.0) AS bpm_delta,
             
             CASE WHEN c.norm_college_name IS NULL THEN 1 ELSE 0 END AS is_non_college_prospect,
 
@@ -105,32 +123,35 @@ def build_prospect_features():
     raw_joined AS (
         SELECT 
             c.*,
-            -- Per-40 Rate Calculations: (PPG / MPG) * 40.0
-            (CAST(c.`47` AS DOUBLE) / NULLIF(CAST(c.`38` AS DOUBLE), 0.0)) * 40.0 AS pts_per_40,
-            (CAST(c.`43` AS DOUBLE) / NULLIF(CAST(c.`38` AS DOUBLE), 0.0)) * 40.0 AS reb_per_40,
-            (CAST(c.`44` AS DOUBLE) / NULLIF(CAST(c.`38` AS DOUBLE), 0.0)) * 40.0 AS ast_per_40,
-            (CAST(c.`45` AS DOUBLE) / NULLIF(CAST(c.`38` AS DOUBLE), 0.0)) * 40.0 AS stl_per_40,
-            (CAST(c.`46` AS DOUBLE) / NULLIF(CAST(c.`38` AS DOUBLE), 0.0)) * 40.0 AS blk_per_40,
+            (c.pts_per_game / NULLIF(c.mp_per_game, 0.0)) * 40.0 AS pts_per_40,
+            (c.reb_per_game / NULLIF(c.mp_per_game, 0.0)) * 40.0 AS reb_per_40,
+            (c.ast_per_game / NULLIF(c.mp_per_game, 0.0)) * 40.0 AS ast_per_40,
+            (c.stl_per_game / NULLIF(c.mp_per_game, 0.0)) * 40.0 AS stl_per_40,
+            (c.blk_per_game / NULLIF(c.mp_per_game, 0.0)) * 40.0 AS blk_per_40,
             
-            CAST(c.`8` AS DOUBLE) AS ts_pct,
-            CAST(c.`7` AS DOUBLE) AS efg_pct,
-            CAST(c.`14` AS DOUBLE) AS ft_pct,
-            CAST(c.`20` AS DOUBLE) / NULLIF((CAST(c.`20` AS DOUBLE) + CAST(c.`16` AS DOUBLE)), 0.0) AS three_par,
-            CAST(c.`13` AS DOUBLE) AS ftr,
-            CAST(c.`50` AS DOUBLE) AS ast_to_ratio,
+            c.ts_pct_val AS ts_pct,
+            c.efg_pct_val AS efg_pct,
+            c.ft_pct_val AS ft_pct,
+            c.three_pt_att / NULLIF((c.three_pt_att + c.two_pt_att), 0.0) AS three_par,
+            c.ftr_val AS ftr,
+            c.ast_to_ratio_val AS ast_to_ratio,
 
-            CAST(c.`6` AS DOUBLE) AS usage_pct,
-            CAST(c.`28` AS DOUBLE) AS college_per, 
-            CAST(c.`3` AS INT) AS games_played,
-            CASE WHEN c.`2` IN ('ACC', 'B10', 'B12', 'SEC', 'P12', 'BE', 'Pac12') THEN 1 ELSE 0 END AS is_power_5,
+            c.usage_pct_val AS usage_pct,
+            c.games_played_val AS games_played,
+            CASE WHEN c.conf IN ('ACC', 'B10', 'B12', 'SEC', 'P12', 'BE', 'Pac12') THEN 1 ELSE 0 END AS is_power_5,
             
-            -- Fault-tolerant Age Calculation using TRY_TO_DATE & TRY_CAST
+            -- Guard / Creator Interactions
+            (c.usage_pct_val * ((c.ast_per_game / NULLIF(c.mp_per_game, 0.0)) * 40.0)) AS usg_ast_interaction,
+            (c.usage_pct_val * c.college_bpm) AS usg_bpm_interaction,
+            (c.ft_pct_val * c.ftr_val) AS ft_volume_touch,
+
             COALESCE(
-                (c.draft_year - YEAR(TRY_TO_DATE(CAST(TRY_CAST(c.`63` AS BIGINT) AS STRING), 'yyyyMMdd')) - (MONTH(TRY_TO_DATE(CAST(TRY_CAST(c.`63` AS BIGINT) AS STRING), 'yyyyMMdd'))/12.0)),
-                (c.draft_year - 19.5)
+                (c.draft_year - YEAR(TO_DATE(c.birthdate_str, 'yyyy-MM-dd')) - 
+                ((MONTH(TO_DATE(c.birthdate_str, 'yyyy-MM-dd')) - 6.0) / 12.0)),
+                19.5
             ) AS age_at_draft,
 
-            CAST(cb.height_wo_shoes AS DOUBLE) AS height_inches,
+            COALESCE(CAST(cb.height_wo_shoes AS DOUBLE), 78.0) AS height_inches,
             CAST(cb.wingspan AS DOUBLE) AS wingspan_inches,
             CAST(cb.standing_reach AS DOUBLE) AS standing_reach_inches,
             CAST(cb.weight AS DOUBLE) AS weight_lbs,
@@ -146,6 +167,45 @@ def build_prospect_features():
         WHERE c.draft_match_rn = 1
     ),
 
+    pos_assigned AS (
+        SELECT 
+            *,
+            -- OBJECTIVE HEIGHT-BASED POSITION TIERS
+            CASE 
+                WHEN height_inches < 77.0 THEN 'Guard'
+                WHEN height_inches >= 77.0 AND height_inches < 81.0 THEN 'Wing'
+                ELSE 'Big'
+            END AS pos_group
+        FROM raw_joined
+    ),
+
+    pos_stats AS (
+        SELECT 
+            *,
+            CASE WHEN pos_group = 'Guard' THEN 1 ELSE 0 END AS is_guard,
+            CASE WHEN pos_group = 'Wing' THEN 1 ELSE 0 END AS is_wing,
+            CASE WHEN pos_group = 'Big' THEN 1 ELSE 0 END AS is_big,
+
+            COALESCE(
+                (college_bpm - AVG(college_bpm) OVER(PARTITION BY pos_group)) 
+                / NULLIF(STDDEV(college_bpm) OVER(PARTITION BY pos_group), 0.0), 
+                0.0
+            ) AS bpm_pos_zscore,
+
+            COALESCE(
+                (pts_per_40 - AVG(pts_per_40) OVER(PARTITION BY pos_group)) 
+                / NULLIF(STDDEV(pts_per_40) OVER(PARTITION BY pos_group), 0.0), 
+                0.0
+            ) AS pts_pos_zscore,
+
+            COALESCE(
+                (ast_per_40 - AVG(ast_per_40) OVER(PARTITION BY pos_group)) 
+                / NULLIF(STDDEV(ast_per_40) OVER(PARTITION BY pos_group), 0.0), 
+                0.0
+            ) AS ast_pos_zscore
+        FROM pos_assigned
+    ),
+
     combine_medians AS (
         SELECT 
             MEDIAN(height_inches) AS med_height,
@@ -154,7 +214,7 @@ def build_prospect_features():
             MEDIAN(weight_lbs) AS med_weight,
             MEDIAN(body_fat_pct) AS med_body_fat,
             MEDIAN(age_at_draft) AS med_age
-        FROM raw_joined
+        FROM pos_stats
     )
 
     SELECT 
@@ -164,6 +224,7 @@ def build_prospect_features():
         r.drafted_team,
         r.is_training_cohort,
         r.is_non_college_prospect,
+        r.pos_group,
         
         -- Targets
         r.vorp_5y,
@@ -188,9 +249,22 @@ def build_prospect_features():
         COALESCE(r.bpm_delta, 0.0) AS bpm_delta,
         COALESCE(r.total_seasons, 0) AS seasons_played_in_college,
         COALESCE(r.usage_pct, 0.0) AS usage_pct,
-        COALESCE(r.college_per, 0.0) AS college_per,
+        0.0 AS college_per,
         COALESCE(r.games_played, 0) AS games_played,
         r.is_power_5,
+
+        -- Positional Features & Relative Z-Scores
+        r.is_guard,
+        r.is_wing,
+        r.is_big,
+        COALESCE(r.bpm_pos_zscore, 0.0) AS bpm_pos_zscore,
+        COALESCE(r.pts_pos_zscore, 0.0) AS pts_pos_zscore,
+        COALESCE(r.ast_pos_zscore, 0.0) AS ast_pos_zscore,
+
+        -- Creator Interactions
+        COALESCE(r.usg_ast_interaction, 0.0) AS usg_ast_interaction,
+        COALESCE(r.usg_bpm_interaction, 0.0) AS usg_bpm_interaction,
+        COALESCE(r.ft_volume_touch, 0.0) AS ft_volume_touch,
 
         -- Age & High-Signal Interactions
         COALESCE(r.age_at_draft, m.med_age) AS age_at_draft,
@@ -210,7 +284,7 @@ def build_prospect_features():
         CASE WHEN r.wingspan_inches IS NULL THEN 1 ELSE 0 END AS wingspan_was_missing,
         CASE WHEN r.body_fat_pct IS NULL THEN 1 ELSE 0 END AS body_fat_was_missing
 
-    FROM raw_joined r
+    FROM pos_stats r
     CROSS JOIN combine_medians m;
     """
 

@@ -11,7 +11,7 @@ def inspect_predictions():
     year_df = df[df['draft_year'] == sample_year].sort_values("pred_vorp_5y", ascending=False)
 
     print(f"=== MODEL A TOP 10 PROSPECTS FOR {sample_year} DRAFT ===")
-    cols_to_show = ["draft_player_name", "overall_pick", "pred_vorp_5y", "model_rank", "college_bpm", "pts_per_40", "age_at_draft"]
+    cols_to_show = ["draft_player_name", "pos_group", "overall_pick", "pred_vorp_5y", "model_rank", "college_bpm", "pts_per_40", "age_at_draft"]
     existing_cols = [c for c in cols_to_show if c in year_df.columns]
     
     print(year_df[existing_cols].head(10).to_string(index=False))
