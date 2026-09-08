@@ -5,7 +5,7 @@ import shap
 import matplotlib.pyplot as plt
 
 def generate_shap_plots():
-    print("Loading model and data for SHAP analysis...")
+    print("Loading ensemble model and data for SHAP analysis...")
     
     # 1. Load the finalized model artifact
     model_path = "models/model.joblib"
@@ -13,52 +13,63 @@ def generate_shap_plots():
         raise FileNotFoundError(f"Cannot find {model_path}. Run train.py first!")
     
     artifact = joblib.load(model_path)
-    model = artifact["model"]
+    
+    # Updated key to match the ensemble artifact
+    lgb_model = artifact["lgb_model"]
     feature_cols = artifact["features"]
 
-    # 2. Load the features dataset
+    # 2. Load feature data
     df = pd.read_parquet("data/processed/features.parquet")
     
-    # Isolate a recent draft class to explain (e.g., the 2021 class)
-    # Using real prospect data makes the SHAP summary much more interpretable
-    recent_class = df[df['draft_year'] == 2021].copy()
+    # Target 2021 draft class for SHAP explanations
+    explain_df = df[df['draft_year'] == 2021].copy()
     
-    # Ensure columns match training exactly
     for col in feature_cols:
-        recent_class[col] = pd.to_numeric(recent_class[col], errors="coerce").fillna(0.0)
+        explain_df[col] = pd.to_numeric(explain_df[col], errors="coerce").fillna(0.0)
     
-    X_explain = recent_class[feature_cols]
+    X_explain = explain_df[feature_cols]
 
-    print(f"Calculating SHAP values for {len(X_explain)} prospects in the 2021 class...")
+    print(f"Calculating SHAP values for {len(X_explain)} prospects in 2021...")
     
-    # 3. Calculate SHAP values
-    explainer = shap.TreeExplainer(model)
-    shap_values = explainer(X_explain)
+    # 3. Calculate SHAP values on the LightGBM component
+    explainer = shap.TreeExplainer(lgb_model)
+    shap_explanation = explainer(X_explain)
 
-    # 4. Generate the Summary Plot (Beeswarm)
-    print("Generating SHAP Summary Plot...")
-    
-    # Adjust plot size and style for readability
-    plt.figure(figsize=(12, 8))
-    
-    shap.summary_plot(
-        shap_values, 
-        X_explain, 
-        max_display=15,  # Show the top 15 most important features
-        show=False       # Prevent the plot from blocking the script
-    )
-    
-    # 5. Save the plot to an image file
     os.makedirs("visualizations", exist_ok=True)
-    plot_path = "visualizations/shap_summary.png"
-    
-    # Tight layout ensures labels don't get cut off
+
+    # 4. Generate Global Summary Plot (Beeswarm)
+    print("Generating Global SHAP Summary Plot...")
+    plt.figure(figsize=(12, 8))
+    shap.summary_plot(
+        shap_explanation.values, 
+        X_explain, 
+        max_display=15, 
+        show=False
+    )
     plt.tight_layout()
+    plot_path = "visualizations/shap_summary.png"
     plt.savefig(plot_path, dpi=300, bbox_inches='tight')
     plt.close()
+    print(f"  -> Saved '{plot_path}'")
+
+    # 5. Generate Individual Waterfall Plots for Key Players (Step 29)
+    target_players = ["Cade Cunningham", "Sharife Cooper", "Miles McBride"]
     
-    print(f"\n[SUCCESS] SHAP feature importance plot saved to: '{plot_path}'")
-    print("Open this image file to see exactly what drives the model's predictions!")
+    for player in target_players:
+        player_mask = explain_df['draft_player_name'].str.contains(player, case=False, na=False)
+        if player_mask.any():
+            player_idx = explain_df[player_mask].index[0]
+            loc_idx = explain_df.index.get_loc(player_idx)
+
+            plt.figure(figsize=(10, 6))
+            shap.plots.waterfall(shap_explanation[loc_idx], max_display=10, show=False)
+            
+            clean_name = player.lower().replace(" ", "_")
+            waterfall_path = f"visualizations/waterfall_{clean_name}.png"
+            plt.tight_layout()
+            plt.savefig(waterfall_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            print(f"  -> Saved waterfall plot for {player}: '{waterfall_path}'")
 
 if __name__ == "__main__":
     generate_shap_plots()

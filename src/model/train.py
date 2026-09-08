@@ -4,24 +4,59 @@ import numpy as np
 import pandas as pd
 import lightgbm as lgb
 from sklearn.linear_model import Ridge
-import shap
+import mlflow
+import mlflow.lightgbm
+from mlflow.models import infer_signature
+from dotenv import load_dotenv
 
 from metrics import compute_ranking_metrics
+
+# 1. Load Environment Variables from .env
+load_dotenv()
+
+# Handle DATABRICKS_SERVER_HOSTNAME mapping to DATABRICKS_HOST if needed
+if "DATABRICKS_SERVER_HOSTNAME" in os.environ and "DATABRICKS_HOST" not in os.environ:
+    host = os.environ["DATABRICKS_SERVER_HOSTNAME"]
+    os.environ["DATABRICKS_HOST"] = host if host.startswith("https://") else f"https://{host}"
+
+if "DATABRICKS_TOKEN" not in os.environ and "DATABRICKS_PERSONAL_ACCESS_TOKEN" in os.environ:
+    os.environ["DATABRICKS_TOKEN"] = os.environ["DATABRICKS_PERSONAL_ACCESS_TOKEN"]
 
 
 def run_training_pipeline():
     print("==========================================")
-    print(" MODEL TRAINING & EVALUATION PIPELINE")
+    print(" PRE-DRAFT MODEL TRAINING PIPELINE (WITH MLFLOW & DATABRICKS UC)")
     print("==========================================\n")
 
-    # Step 1: Load Local Parquet Data
+    # 2. Configure MLflow for Databricks Tracking & Unity Catalog Model Registry
+    try:
+        mlflow.set_tracking_uri("databricks")
+        mlflow.set_registry_uri("databricks-uc")
+    except Exception as e:
+        print(f"Notice setting MLflow URIs: {e}")
+
+    # Use /Shared/nba-draft as default so it works out-of-the-box on Databricks
+    experiment_name = os.getenv("MLFLOW_EXPERIMENT_NAME", "/Shared/nba-draft")
+
+    try:
+        exp = mlflow.get_experiment_by_name(experiment_name)
+        if exp is None:
+            exp_id = mlflow.create_experiment(experiment_name)
+            mlflow.set_experiment(experiment_id=exp_id)
+        else:
+            mlflow.set_experiment(experiment_name)
+        print(f"  [MLflow] Logging to experiment: '{experiment_name}'")
+    except Exception as e:
+        print(f"Warning setting MLflow experiment '{experiment_name}': {e}")
+
+    # 3. Load Local Parquet Data (Pre-processed with height-gated ape index)
     data_path = "data/processed/features.parquet"
     if not os.path.exists(data_path):
         raise FileNotFoundError(f"Missing {data_path}. Run export_features.py first!")
 
     df = pd.read_parquet(data_path)
 
-    # Metadata, text, & target columns that should not be used as raw training features
+    # Exclude metadata, text, and post-draft pick information
     ignore_cols = [
         "draft_player_name",
         "draft_year",
@@ -30,89 +65,31 @@ def run_training_pipeline():
         "vorp_5y",
         "reached_min_threshold_5y",
         "player_tier_5y",
-        "overall_pick",
-        "pos_group",  # Added so text strings ('Guard', 'Wing', 'Big') aren't passed to pd.to_numeric
+        "overall_pick",  # Excluded to eliminate post-draft leakage
+        "pos_group",
     ]
 
-    # Convert non-metadata columns to numeric float types for LightGBM/Ridge
     for col in df.columns:
         if col not in ignore_cols:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
 
-    # Ensure key numeric targets & identifiers are correctly typed
     df["vorp_5y"] = pd.to_numeric(df["vorp_5y"], errors="coerce").fillna(0.0)
-    df["overall_pick"] = pd.to_numeric(df["overall_pick"], errors="coerce")
     df["draft_year"] = pd.to_numeric(df["draft_year"], errors="coerce")
 
-    # Isolate training set cohort
+    # Cohort Splits
     train_df = df[df["is_training_cohort"] == True].copy()
     unlabeled_df = df[df["is_training_cohort"] == False].copy()
 
-    # Strict Cohort Splits
     train_set = train_df[train_df["draft_year"] <= 2016]
     val_set = train_df[train_df["draft_year"].isin([2017, 2018])]
     test_set = train_df[train_df["draft_year"] == 2019]
 
     target_col = "vorp_5y"
+    feature_cols = [c for c in train_df.columns if c not in ignore_cols]
 
-    # Model A Features (No Draft Pick #)
-    feature_cols_a = [c for c in train_df.columns if c not in ignore_cols]
-
-    # Model B Features (Includes Draft Pick # Benchmark)
-    feature_cols_b = feature_cols_a + ["overall_pick"]
-
-    X_train_a, y_train = train_set[feature_cols_a], train_set[target_col]
-    X_val_a, y_val = val_set[feature_cols_a], val_set[target_col]
-    X_test_a, y_test = test_set[feature_cols_a], test_set[target_col]
-
-    # --- Baseline Models ---
-    print("--- 1. EVALUATING BASELINES ON VALIDATION (2017-2018) ---")
-
-    # Baseline 1: Training Mean Predictor
-    mean_pred = np.full(len(y_val), y_train.mean())
-    bm_mean = compute_ranking_metrics(
-        y_val.values, mean_pred, val_set["draft_year"].values
-    )
-    print(
-        f"  [Baseline 1 - Mean Predictor] Spearman: {bm_mean['spearman_rho']:.3f} | NDCG@10: {bm_mean['ndcg_10']:.3f}"
-    )
-
-    # Baseline 2: Draft Pick Number Alone
-    pick_pred = -val_set["overall_pick"].values
-    bm_pick = compute_ranking_metrics(
-        y_val.values, pick_pred, val_set["draft_year"].values
-    )
-    print(
-        f"  [Baseline 2 - Pick Number]   Spearman: {bm_pick['spearman_rho']:.3f} | NDCG@10: {bm_pick['ndcg_10']:.3f} | Hit Rate: {bm_pick['hit_rate_top10_in_30']:.2f}"
-    )
-
-    # Baseline 3: Ridge Regression (~10 core features)
-    core_10 = [
-        "pts_per_40",
-        "college_bpm",
-        "age_at_draft",
-        "ape_index",
-        "ts_pct",
-        "ast_per_40",
-        "reb_per_40",
-        "height_inches",
-        "usage_pct",
-        "is_power_5",
-    ]
-    core_10 = [c for c in core_10 if c in X_train_a.columns]
-
-    ridge = Ridge(alpha=10.0)
-    ridge.fit(X_train_a[core_10], y_train)
-    ridge_pred = ridge.predict(X_val_a[core_10])
-    bm_ridge = compute_ranking_metrics(
-        y_val.values, ridge_pred, val_set["draft_year"].values
-    )
-    print(
-        f"  [Baseline 3 - Ridge Reg 10]  Spearman: {bm_ridge['spearman_rho']:.3f} | NDCG@10: {bm_ridge['ndcg_10']:.3f}"
-    )
-
-    # --- LightGBM Model A vs Model B ---
-    print("\n--- 2. TRAINING LIGHTGBM MODELS ---")
+    X_train, y_train = train_set[feature_cols], train_set[target_col]
+    X_val, y_val = val_set[feature_cols], val_set[target_col]
+    X_test, y_test = test_set[feature_cols], test_set[target_col]
 
     lgb_params = {
         "objective": "regression",
@@ -124,91 +101,103 @@ def run_training_pipeline():
         "random_state": 42,
     }
 
-    # Model A: Pure College & Physical Signal
-    model_a = lgb.LGBMRegressor(**lgb_params, n_estimators=500)
-    model_a.fit(
-        X_train_a,
-        y_train,
-        eval_set=[(X_val_a, y_val)],
-        callbacks=[lgb.early_stopping(stopping_rounds=30, verbose=False)],
-    )
-    val_pred_a = model_a.predict(X_val_a)
-    m_a_val = compute_ranking_metrics(
-        y_val.values, val_pred_a, val_set["draft_year"].values
-    )
-    print(
-        f"  [Model A (No Pick) - Val]    Spearman: {m_a_val['spearman_rho']:.3f} | NDCG@10: {m_a_val['ndcg_10']:.3f} | Hit Rate: {m_a_val['hit_rate_top10_in_30']:.2f}"
-    )
+    # 4. START MLFLOW RUN
+    with mlflow.start_run(run_name="70_30_PreDraft_Ensemble") as run:
+        print(f"  [MLflow] Active Run ID: {run.info.run_id}")
 
-    # Model B: Includes Draft Pick Benchmark
-    X_train_b, X_val_b = train_set[feature_cols_b], val_set[feature_cols_b]
-    model_b = lgb.LGBMRegressor(**lgb_params, n_estimators=500)
-    model_b.fit(
-        X_train_b,
-        y_train,
-        eval_set=[(X_val_b, y_val)],
-        callbacks=[lgb.early_stopping(stopping_rounds=30, verbose=False)],
-    )
-    val_pred_b = model_b.predict(X_val_b)
-    m_b_val = compute_ranking_metrics(
-        y_val.values, val_pred_b, val_set["draft_year"].values
-    )
-    print(
-        f"  [Model B (With Pick) - Val]  Spearman: {m_b_val['spearman_rho']:.3f} | NDCG@10: {m_b_val['ndcg_10']:.3f} | Hit Rate: {m_b_val['hit_rate_top10_in_30']:.2f}"
-    )
+        # Log Hyperparameters & Model Config
+        mlflow.log_params(lgb_params)
+        mlflow.log_params({
+            "model_type": "70/30 Ensemble (LightGBM + Ridge)",
+            "ridge_alpha": 20.0,
+            "lgb_weight": 0.70,
+            "ridge_weight": 0.30,
+            "num_features": len(feature_cols),
+        })
 
-    # --- FINAL TEST EVALUATION ---
-    print("\n--- 3. UNTOUCHED 2019 TEST COHORT EVALUATION ---")
-    test_pred_a = model_a.predict(X_test_a)
-    test_metrics_a = compute_ranking_metrics(
-        y_test.values, test_pred_a, test_set["draft_year"].values
-    )
-    print(
-        f"  -> [Model A - 2019 Test Set] Spearman: {test_metrics_a['spearman_rho']:.3f} | NDCG@10: {test_metrics_a['ndcg_10']:.3f} | Hit Rate: {test_metrics_a['hit_rate_top10_in_30']:.2f}"
-    )
-
-    # --- SHAP Interpretability ---
-    print("\n--- 4. GENERATING SHAP EXPLANATIONS ---")
-    explainer = shap.TreeExplainer(model_a)
-    _ = explainer(X_val_a)
-    print("  -> SHAP values calculated successfully for Model A.")
-
-    # --- Retrain on Full Historical Cohort (<=2019) & Save ---
-    print("\n--- 5. RETRAINING ON ALL TRAIN DATA (2009-2019) & EXPORTING ---")
-    X_full_a = train_df[feature_cols_a]
-    y_full = train_df[target_col]
-
-    final_model_a = lgb.LGBMRegressor(
-        **lgb_params, n_estimators=model_a.best_iteration_
-    )
-    final_model_a.fit(X_full_a, y_full)
-
-    os.makedirs("models", exist_ok=True)
-    model_artifact_path = "models/model.joblib"
-
-    artifact = {
-        "model": final_model_a,
-        "features": feature_cols_a,
-        "version": "1.0",
-    }
-    joblib.dump(artifact, model_artifact_path)
-    print(f"  -> [SUCCESS] Saved final model artifact to '{model_artifact_path}'")
-
-    # Score Unlabeled prospects (2020+) for downstream evaluation / web apps
-    if len(unlabeled_df) > 0:
-        X_unlabeled = unlabeled_df[feature_cols_a]
-        unlabeled_df["pred_vorp_5y"] = final_model_a.predict(X_unlabeled)
-
-        # Rank within draft class
-        unlabeled_df["model_rank"] = unlabeled_df.groupby("draft_year")[
-            "pred_vorp_5y"
-        ].rank(ascending=False, method="min")
-
-        output_predictions_path = "data/processed/predictions.parquet"
-        unlabeled_df.to_parquet(output_predictions_path, index=False)
-        print(
-            f"  -> [SUCCESS] Exported {len(unlabeled_df)} future prospect predictions to '{output_predictions_path}'"
+        # --- Train Ensemble Components on Training Set ---
+        lgb_model = lgb.LGBMRegressor(**lgb_params, n_estimators=500)
+        lgb_model.fit(
+            X_train,
+            y_train,
+            eval_set=[(X_val, y_val)],
+            callbacks=[lgb.early_stopping(stopping_rounds=30, verbose=False)],
         )
+        val_pred_lgb = lgb_model.predict(X_val)
+
+        ridge_model = Ridge(alpha=20.0, random_state=42)
+        ridge_model.fit(X_train, y_train)
+        val_pred_ridge = ridge_model.predict(X_val)
+
+        # 70/30 Validation Blend
+        val_pred_ensemble = (0.70 * val_pred_lgb) + (0.30 * val_pred_ridge)
+        m_ens = compute_ranking_metrics(y_val.values, val_pred_ensemble, val_set["draft_year"].values)
+
+        # Log Validation Metrics
+        mlflow.log_metric("val_spearman_rho", m_ens["spearman_rho"])
+        mlflow.log_metric("val_ndcg_10", m_ens["ndcg_10"])
+        mlflow.log_metric("val_ndcg_30", m_ens["ndcg_30"])
+        mlflow.log_metric("val_hit_rate_top10_in_30", m_ens["hit_rate_top10_in_30"])
+
+        print(f"  [Pre-Draft Ensemble - Val] Spearman: {m_ens['spearman_rho']:.3f} | NDCG@10: {m_ens['ndcg_10']:.3f} | Hit Rate: {m_ens['hit_rate_top10_in_30']:.2f}")
+
+        # --- Evaluate Untouched 2019 Test Cohort ---
+        test_pred_lgb = lgb_model.predict(X_test)
+        test_pred_ridge = ridge_model.predict(X_test)
+        test_pred_ens = (0.70 * test_pred_lgb) + (0.30 * test_pred_ridge)
+
+        test_metrics = compute_ranking_metrics(y_test.values, test_pred_ens, test_set["draft_year"].values)
+
+        # Log Test Metrics
+        mlflow.log_metric("test_2019_spearman_rho", test_metrics["spearman_rho"])
+        mlflow.log_metric("test_2019_ndcg_10", test_metrics["ndcg_10"])
+        mlflow.log_metric("test_2019_ndcg_30", test_metrics["ndcg_30"])
+        mlflow.log_metric("test_2019_hit_rate", test_metrics["hit_rate_top10_in_30"])
+
+        print(f"  -> [2019 Test Set] Spearman: {test_metrics['spearman_rho']:.3f} | NDCG@10: {test_metrics['ndcg_10']:.3f} | Hit Rate: {test_metrics['hit_rate_top10_in_30']:.2f}")
+
+        # --- Retrain Ensemble on All Historical Data (2009-2019) ---
+        print("\n--- RETRAINING ENSEMBLE ON ALL TRAIN DATA (2009-2019) ---")
+        X_full = train_df[feature_cols]
+        y_full = train_df[target_col]
+
+        final_lgb = lgb.LGBMRegressor(**lgb_params, n_estimators=lgb_model.best_iteration_)
+        final_lgb.fit(X_full, y_full)
+
+        final_ridge = Ridge(alpha=20.0, random_state=42)
+        final_ridge.fit(X_full, y_full)
+
+        # Save Local Artifact
+        os.makedirs("models", exist_ok=True)
+        model_artifact_path = "models/model.joblib"
+        artifact = {
+            "lgb_model": final_lgb,
+            "ridge_model": final_ridge,
+            "lgb_weight": 0.70,
+            "ridge_weight": 0.30,
+            "features": feature_cols,
+            "version": "2.2_cubic_height_gated_ape_index_ensemble",
+        }
+        joblib.dump(artifact, model_artifact_path)
+        print(f"  -> Saved local model artifact to '{model_artifact_path}'")
+
+        # Score Unlabeled Prospects (2020+)
+        if len(unlabeled_df) > 0:
+            X_unlabeled = unlabeled_df[feature_cols]
+
+            lgb_unlabeled_pred = final_lgb.predict(X_unlabeled)
+            ridge_unlabeled_pred = final_ridge.predict(X_unlabeled)
+
+            unlabeled_df["pred_vorp_5y"] = (0.70 * lgb_unlabeled_pred) + (0.30 * ridge_unlabeled_pred)
+
+            # Class Rank
+            unlabeled_df["model_rank"] = unlabeled_df.groupby("draft_year")["pred_vorp_5y"].rank(
+                ascending=False, method="min"
+            )
+
+            output_predictions_path = "data/processed/predictions.parquet"
+            unlabeled_df.to_parquet(output_predictions_path, index=False)
+            print(f"  -> [SUCCESS] Exported {len(unlabeled_df)} pre-draft predictions to '{output_predictions_path}'")
 
 
 if __name__ == "__main__":
