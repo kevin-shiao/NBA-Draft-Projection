@@ -336,13 +336,17 @@ elif page == "Model vs. Draft":
             df_eval["overall_pick"] - df_eval["model_rank"]
         )
 
+        # Clip negative VORP values to 0 and add an offset so all points render with a valid size
+        df_eval["plot_size"] = df_eval["pred_vorp_5y"].clip(lower=0) + 2.0
+
         fig = px.scatter(
             df_eval,
             x="overall_pick",
             y="model_rank",
             hover_name="draft_player_name",
             color="pos_group",
-            size="pred_vorp_5y",
+            size="plot_size",  # Use non-negative plot_size here
+            size_max=15,
             title="Model Rank vs. Actual Draft Pick",
             labels={
                 "overall_pick": "Actual Draft Pick",
@@ -360,60 +364,6 @@ elif page == "Model vs. Draft":
             )
         )
         st.plotly_chart(fig, use_container_width=True)
-
-        col_steals, col_reaches = st.columns(2)
-
-        with col_steals:
-            st.subheader("Best Steals (Model Loved, Drafted Late)")
-            steals_df = df_eval.sort_values(
-                by="draft_disagreement", ascending=False
-            ).head(5)
-            st.dataframe(
-                steals_df[
-                    [
-                        "draft_player_name",
-                        "draft_year",
-                        "overall_pick",
-                        "model_rank",
-                        "pred_vorp_5y",
-                    ]
-                ].rename(
-                    columns={
-                        "draft_player_name": "Player",
-                        "overall_pick": "Draft Pick",
-                        "model_rank": "Model Rank",
-                        "pred_vorp_5y": "Pred VORP",
-                    }
-                ),
-                hide_index=True,
-                use_container_width=True,
-            )
-
-        with col_reaches:
-            st.subheader("Biggest Reaches (Drafted Early, Model Hated)")
-            reaches_df = df_eval.sort_values(
-                by="draft_disagreement", ascending=True
-            ).head(5)
-            st.dataframe(
-                reaches_df[
-                    [
-                        "draft_player_name",
-                        "draft_year",
-                        "overall_pick",
-                        "model_rank",
-                        "pred_vorp_5y",
-                    ]
-                ].rename(
-                    columns={
-                        "draft_player_name": "Player",
-                        "overall_pick": "Draft Pick",
-                        "model_rank": "Model Rank",
-                        "pred_vorp_5y": "Pred VORP",
-                    }
-                ),
-                hide_index=True,
-                use_container_width=True,
-            )
 
 
 # ==========================================
