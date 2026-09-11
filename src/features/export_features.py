@@ -258,6 +258,25 @@ def export_features_to_parquet():
 
     os.makedirs("data/processed", exist_ok=True)
     os.makedirs("models", exist_ok=True)
+    
+    # --- APPLY MANUAL POSITION OVERRIDES ---
+    override_path = "data/interim/position_review.csv"
+    if os.path.exists(override_path):
+        overrides = pd.read_csv(override_path)
+        
+        # Keep rows with valid non-empty manual overrides
+        overrides = overrides[
+            overrides["manual_override_position"].notna() 
+            & (overrides["manual_override_position"].str.strip() != "")
+        ]
+        
+        # Build override mapping dictionary: {"Cade Cunningham": "Guard", ...}
+        override_map = dict(zip(overrides["draft_player_name"], overrides["manual_override_position"].str.strip()))
+        
+        # Apply the override mapping
+        if "draft_player_name" in df.columns:
+            df["pos_group"] = df["draft_player_name"].map(override_map).fillna(df["pos_group"])
+            print(f"✅ Successfully applied {len(override_map)} manual position overrides from {override_path}.")
 
     output_path = "data/processed/features.parquet"
     df.to_parquet(output_path, index=False)

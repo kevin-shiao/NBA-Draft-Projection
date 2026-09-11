@@ -1,75 +1,107 @@
 import os
+import re
 import joblib
 import pandas as pd
-import shap
+import numpy as np
 import matplotlib.pyplot as plt
+import shap
 
-def generate_shap_plots():
-    print("Loading ensemble model and data for SHAP analysis...")
-    
-    # 1. Load the finalized model artifact
+
+def sanitize_filename(name):
+    """Sanitize player names to create valid file paths."""
+    return re.sub(r'[^\w\s-]', '', str(name)).strip().replace(' ', '_')
+
+
+def generate_all_shap_plots():
+    features_path = "data/processed/features.parquet"
     model_path = "models/model.joblib"
+    base_output_dir = "data/shap_plots"
+
+    if not os.path.exists(features_path):
+        print(f"Error: {features_path} not found.")
+        return
+
     if not os.path.exists(model_path):
-        raise FileNotFoundError(f"Cannot find {model_path}. Run train.py first!")
-    
+        print(f"Error: {model_path} not found.")
+        return
+
+    df = pd.read_parquet(features_path)
     artifact = joblib.load(model_path)
-    
-    # Updated key to match the ensemble artifact
-    lgb_model = artifact["lgb_model"]
-    feature_cols = artifact["features"]
 
-    # 2. Load feature data
-    df = pd.read_parquet("data/processed/features.parquet")
-    
-    # Target 2021 draft class for SHAP explanations
-    explain_df = df[df['draft_year'] == 2021].copy()
-    
-    for col in feature_cols:
-        explain_df[col] = pd.to_numeric(explain_df[col], errors="coerce").fillna(0.0)
-    
-    X_explain = explain_df[feature_cols]
+    # Resolve model object from dictionary or direct object
+    lgb_model = artifact.get("lgb_model") if isinstance(artifact, dict) else artifact
 
-    print(f"Calculating SHAP values for {len(X_explain)} prospects in 2021...")
+    if lgb_model is None:
+        print("Error: Could not retrieve LightGBM model from artifact.")
+        return
+
+    ignore_cols = [
+        "draft_player_name", "draft_year", "drafted_team", "is_training_cohort",
+        "vorp_5y", "reached_min_threshold_5y", "player_tier_5y", "overall_pick",
+        "pos_group", "nba_position", "pos_bucket", "season"
+    ]
     
-    # 3. Calculate SHAP values on the LightGBM component
+    # Extract feature columns used in training
+    model_features = [
+        c for c in df.columns 
+        if c not in ignore_cols and pd.api.types.is_numeric_dtype(df[c])
+    ]
+
+    # Initialize SHAP Tree Explainer
     explainer = shap.TreeExplainer(lgb_model)
-    shap_explanation = explainer(X_explain)
 
-    os.makedirs("visualizations", exist_ok=True)
+    # Filter for target draft classes (2020 through 2026)
+    target_years = range(2020, 2027)
+    df_targets = df[df["draft_year"].isin(target_years)].copy()
 
-    # 4. Generate Global Summary Plot (Beeswarm)
-    print("Generating Global SHAP Summary Plot...")
-    plt.figure(figsize=(12, 8))
-    shap.summary_plot(
-        shap_explanation.values, 
-        X_explain, 
-        max_display=15, 
-        show=False
-    )
-    plt.tight_layout()
-    plot_path = "visualizations/shap_summary.png"
-    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-    plt.close()
-    print(f"  -> Saved '{plot_path}'")
+    total_players = len(df_targets)
+    print(f"Starting SHAP plot generation for {total_players} prospects (2020-2026)...")
 
-    # 5. Generate Individual Waterfall Plots for Key Players (Step 29)
-    target_players = ["Cade Cunningham", "Sharife Cooper", "Miles McBride"]
-    
-    for player in target_players:
-        player_mask = explain_df['draft_player_name'].str.contains(player, case=False, na=False)
-        if player_mask.any():
-            player_idx = explain_df[player_mask].index[0]
-            loc_idx = explain_df.index.get_loc(player_idx)
+    saved_count = 0
 
-            plt.figure(figsize=(10, 6))
-            shap.plots.waterfall(shap_explanation[loc_idx], max_display=10, show=False)
-            
-            clean_name = player.lower().replace(" ", "_")
-            waterfall_path = f"visualizations/waterfall_{clean_name}.png"
+    for year in target_years:
+        year_df = df_targets[df_targets["draft_year"] == year]
+        if year_df.empty:
+            continue
+
+        # Create target year directory (e.g. data/shap_plots/2026/)
+        year_dir = os.path.join(base_output_dir, str(year))
+        os.makedirs(year_dir, exist_ok=True)
+
+        for _, row in year_df.iterrows():
+            player_name = row["draft_player_name"]
+            file_safe_name = sanitize_filename(player_name)
+            output_file = os.path.join(year_dir, f"{file_safe_name}.png")
+
+            # Extract feature vector for single player
+            X_player = pd.DataFrame([row[model_features]]).fillna(0.0)
+
+            # Calculate SHAP values for the player
+            shap_values = explainer(X_player)
+
+            # Initialize clean Matplotlib figure
+            fig = plt.figure(figsize=(8, 5))
+
+            # Render SHAP waterfall plot
+            shap.plots.waterfall(
+                shap_values[0], 
+                max_display=8, 
+                show=False
+            )
+
+            plt.title(f"SHAP Feature Drivers: {player_name} ({year})", fontsize=12, pad=15)
             plt.tight_layout()
-            plt.savefig(waterfall_path, dpi=300, bbox_inches='tight')
-            plt.close()
-            print(f"  -> Saved waterfall plot for {player}: '{waterfall_path}'")
+
+            # Save high-resolution PNG
+            plt.savefig(output_file, dpi=150, bbox_inches="tight")
+            plt.close(fig)
+
+            saved_count += 1
+
+        print(f" Saved {len(year_df)} SHAP plots for Class of {year} in '{year_dir}'")
+
+    print(f"\nCompleted! Successfully saved {saved_count} SHAP plots to '{base_output_dir}/'.")
+
 
 if __name__ == "__main__":
-    generate_shap_plots()
+    generate_all_shap_plots()

@@ -1,4 +1,5 @@
 import os
+import re
 import joblib
 import numpy as np
 import pandas as pd
@@ -53,6 +54,8 @@ def assign_tier(pred_vorp):
     else:
         return "Fringe / Developmental"
 
+def sanitize_filename(name):
+    return re.sub(r'[^\w\s-]', '', str(name)).strip().replace(' ', '_')
 
 # Load Artifacts
 predictions_df = load_predictions()
@@ -371,6 +374,21 @@ elif page == "Player Card":
                         "Actual 5Y VORP": st.column_config.NumberColumn(format="%.2f"),
                     },
                 )
+
+    if selected_player:
+        player_year = int(player_row.get("draft_year", 0))
+        safe_name = sanitize_filename(selected_player)
+        
+        shap_image_path = f"data/shap_plots/{player_year}/{safe_name}.png"
+        
+        st.markdown("---")
+        st.subheader("🔍 Model Drivers (SHAP Plot)")
+        
+        if os.path.exists(shap_image_path):
+            st.image(shap_image_path, use_container_width=True)
+        else:
+            st.info(f"No pre-rendered SHAP plot found for {selected_player}.")
+    
 
 # ==========================================
 # PAGE 3: MODEL VS. DRAFT
