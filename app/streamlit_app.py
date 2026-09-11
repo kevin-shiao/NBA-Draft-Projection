@@ -76,7 +76,7 @@ st.sidebar.caption("Powered by LightGBM & Ridge Ensemble | Databricks & MLflow")
 if page == "Big Board":
     st.title("Draft Big Board")
     st.markdown(
-        "Explore sortable and filterable projected rankings for recent draft classes based on pre-draft predictive VORP."
+        "Explore sortable and filterable projected rankings for recent draft classes based on pre-draft predictive VORP and calibrated rotation probability."
     )
 
     if predictions_df.empty:
@@ -118,12 +118,19 @@ if page == "Big Board":
         df_class["Tier"] = df_class["pred_vorp_5y"].apply(assign_tier)
         df_class["Model Rank"] = df_class["model_rank"].astype(int)
 
+        # Format rotation_prob as 0-100 percentage if present
+        if "rotation_prob" in df_class.columns:
+            df_class["Rotation Prob %"] = df_class["rotation_prob"].apply(
+                lambda x: x * 100 if pd.notna(x) and x <= 1.0 else x
+            )
+
         # Columns Display Config
         display_cols = [
             "Model Rank",
             "draft_player_name",
             "pos_group",
             "pred_vorp_5y",
+            "Rotation Prob %",
             "Tier",
             "overall_pick",
             "college_bpm",
@@ -156,13 +163,15 @@ if page == "Big Board":
                 "Projected 5Y VORP": st.column_config.NumberColumn(
                     format="%.2f"
                 ),
+                "Rotation Prob %": st.column_config.NumberColumn(
+                    format="%.1f%%"
+                ),
                 "College BPM": st.column_config.NumberColumn(format="%.1f"),
                 "PTS / 40": st.column_config.NumberColumn(format="%.1f"),
                 "True Shooting %": st.column_config.NumberColumn(format="%.3f"),
                 "Draft Age": st.column_config.NumberColumn(format="%.1f"),
             },
         )
-
 
 # ==========================================
 # PAGE 2: PLAYER CARD
@@ -173,147 +182,195 @@ elif page == "Player Card":
     if features_df.empty:
         st.error("Features dataset not found. Run pipeline steps first.")
     else:
-        all_players = sorted(
-            features_df["draft_player_name"].dropna().unique()
-        )
-        selected_player = st.selectbox("Select a Prospect", all_players)
+        # --- FILTER & SEARCH BAR SECTION ---
+        col_y, col_p, col_s = st.columns([1, 1, 2])
 
-        player_row = features_df[
-            features_df["draft_player_name"] == selected_player
-        ].iloc[0]
+        with col_y:
+            available_years = ["All"] + sorted(
+                features_df["draft_year"].dropna().unique().astype(int),
+                reverse=True,
+            )
+            selected_year = st.selectbox("Filter Draft Year", available_years, index=0)
 
-        # Top Metric Highlights
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Position", str(player_row.get("pos_group", "N/A")))
-        c2.metric("Draft Year", int(player_row.get("draft_year", 0)))
+        with col_p:
+            available_positions = ["All"] + sorted(
+                features_df["pos_group"].dropna().unique()
+            )
+            selected_pos = st.selectbox("Filter Position", available_positions, index=0)
 
-        # Fetch prediction if available
-        pred_val = "N/A"
-        tier_val = "N/A"
-        if not predictions_df.empty and selected_player in predictions_df["draft_player_name"].values:
-            p_pred = predictions_df[predictions_df["draft_player_name"] == selected_player].iloc[0]
-            pred_val = f"{p_pred.get('pred_vorp_5y', 0.0):.2f}"
-            tier_val = assign_tier(p_pred.get("pred_vorp_5y", 0.0))
+        # Apply filters to build filtered player list
+        filtered_df = features_df.copy()
+        if selected_year != "All":
+            filtered_df = filtered_df[filtered_df["draft_year"] == selected_year]
+        if selected_pos != "All":
+            filtered_df = filtered_df[filtered_df["pos_group"] == selected_pos]
 
-        c3.metric("Projected 5Y VORP", pred_val)
-        c4.metric("Tier", tier_val)
+        filtered_player_list = sorted(filtered_df["draft_player_name"].dropna().unique())
+
+        with col_s:
+            if not filtered_player_list:
+                st.warning("No prospects match the selected Year & Position filters.")
+                selected_player = None
+            else:
+                # Streamlit selectbox allows direct typing/searching
+                selected_player = st.selectbox(
+                    "Search / Select Prospect",
+                    filtered_player_list,
+                    help="Type a player's name directly in the box to search!"
+                )
 
         st.markdown("---")
 
-        # Stat Line & Physicals
-        col_stat, col_phys = st.columns(2)
-        with col_stat:
-            st.subheader("College Production Metrics")
-            st.write(
-                f"**College BPM:** {player_row.get('college_bpm', 0.0):.2f}"
-            )
-            st.write(f"**Points / 40:** {player_row.get('pts_per_40', 0.0):.1f}")
-            st.write(
-                f"**Rebounds / 40:** {player_row.get('reb_per_40', 0.0):.1f}"
-            )
-            st.write(
-                f"**Assists / 40:** {player_row.get('ast_per_40', 0.0):.1f}"
-            )
-            st.write(
-                f"**True Shooting %:** {player_row.get('ts_pct', 0.0):.3f}"
-            )
+        if selected_player:
+            player_row = features_df[
+                features_df["draft_player_name"] == selected_player
+            ].iloc[0]
 
-        with col_phys:
-            st.subheader("Anthropometrics")
-            st.write(
-                f"**Height (no shoes):** {player_row.get('height_wo_shoes_inches', 0.0):.1f} inches"
-            )
-            st.write(
-                f"**Wingspan:** {player_row.get('wingspan_inches', 0.0):.1f} inches"
-            )
-            st.write(
-                f"**Ape Index (Adjusted):** {player_row.get('ape_index', 0.0):.2f}"
-            )
-            st.write(
-                f"**Body Fat %:** {player_row.get('body_fat_pct', 0.0):.1f}%"
-            )
+            # Fetch prediction details if available
+            pred_val = "N/A"
+            rot_prob_val = "N/A"
+            tier_val = "N/A"
 
-        st.markdown("---")
-        st.subheader("3-5 Historical Player Comparisons (Cosine Similarity)")
+            if not predictions_df.empty:
+                p_match = predictions_df[predictions_df["draft_player_name"] == selected_player]
+                if not p_match.empty:
+                    p_pred = p_match.iloc[0]
+                    
+                    # Fetch VORP and Tier
+                    vorp_raw = p_pred.get("pred_vorp_5y")
+                    if pd.notna(vorp_raw):
+                        pred_val = f"{float(vorp_raw):.2f}"
+                        tier_val = assign_tier(float(vorp_raw))
 
-        # Historical Comps Calculation
-        ignore_cols = [
-            "draft_player_name",
-            "draft_year",
-            "drafted_team",
-            "is_training_cohort",
-            "vorp_5y",
-            "reached_min_threshold_5y",
-            "player_tier_5y",
-            "overall_pick",
-            "pos_group",
-        ]
-        feat_cols = [
-            c
-            for c in features_df.columns
-            if c not in ignore_cols
-            and pd.api.types.is_numeric_dtype(features_df[c])
-        ]
+                    # Fetch Rotation Probability
+                    rot_raw = p_pred.get("rotation_prob")
+                    if pd.notna(rot_raw):
+                        rot_float = float(rot_raw)
+                        rot_prob_val = f"{rot_float * 100:.1f}%" if rot_float <= 1.0 else f"{rot_float:.1f}%"
 
-        # Filter historical training cohort for comparisons
-        hist_df = features_df[
-            (features_df["is_training_cohort"] == True)
-            & (features_df["draft_player_name"] != selected_player)
-        ].copy()
+            # Top Metric Highlights
+            c1, c2, c3, c4, c5 = st.columns(5)
+            c1.metric("Position", str(player_row.get("pos_group", "N/A")))
+            c2.metric("Draft Year", int(player_row.get("draft_year", 0)))
+            c3.metric("Projected 5Y VORP", pred_val)
+            c4.metric("Rotation Prob", rot_prob_val)
+            c5.metric("Tier", tier_val)
 
-        if not hist_df.empty and len(feat_cols) > 0:
-            X_hist = hist_df[feat_cols].fillna(0.0)
-            X_target = (
-                pd.DataFrame([player_row[feat_cols]])
-                .fillna(0.0)
-                .values.reshape(1, -1)
-            )
+            st.markdown("---")
 
-            scaler = StandardScaler()
-            X_hist_scaled = scaler.fit_transform(X_hist)
-            X_target_scaled = scaler.transform(X_target)
+            # Stat Line & Physicals
+            col_stat, col_phys = st.columns(2)
+            with col_stat:
+                st.subheader("College Production Metrics")
+                st.write(f"**College BPM:** {player_row.get('college_bpm', 0.0):.2f}")
+                st.write(f"**Points / 40:** {player_row.get('pts_per_40', 0.0):.1f}")
+                st.write(f"**Rebounds / 40:** {player_row.get('reb_per_40', 0.0):.1f}")
+                st.write(f"**Assists / 40:** {player_row.get('ast_per_40', 0.0):.1f}")
+                st.write(f"**True Shooting %:** {player_row.get('ts_pct', 0.0):.3f}")
 
-            sims = cosine_similarity(X_target_scaled, X_hist_scaled).flatten()
-            hist_df["similarity_score"] = sims
+            with col_phys:
+                st.subheader("Anthropometrics")
 
-            top_comps = hist_df.sort_values(
-                by="similarity_score", ascending=False
-            ).head(5)
+                # Converts raw inches (e.g. 81.0) to standard feet/inches format (e.g. 6'9")
+                def format_feet_inches(val_inches):
+                    if not val_inches or val_inches <= 0.0:
+                        return "N/A (No Combine Data)"
+                    feet = int(val_inches // 12)
+                    inches = val_inches % 12
+                    if inches.is_integer() or abs(inches - round(inches)) < 0.01:
+                        return f"{feet}'{int(round(inches))}\""
+                    return f"{feet}'{inches:.1f}\""
 
-            comp_display = top_comps[
-                [
-                    "draft_player_name",
-                    "draft_year",
-                    "pos_group",
-                    "overall_pick",
-                    "vorp_5y",
-                    "similarity_score",
-                ]
-            ].rename(
-                columns={
-                    "draft_player_name": "Historical Player",
-                    "draft_year": "Draft Year",
-                    "pos_group": "Position",
-                    "overall_pick": "Actual Pick",
-                    "vorp_5y": "Actual 5Y VORP",
-                    "similarity_score": "Similarity Match",
-                }
-            )
+                def get_phys_metric(row, keys):
+                    for k in keys:
+                        if k in row and pd.notna(row[k]) and float(row[k]) > 0.0:
+                            return float(row[k])
+                    return None
 
-            st.dataframe(
-                comp_display,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Similarity Match": st.column_config.NumberColumn(
-                        format="%.3f"
-                    ),
-                    "Actual 5Y VORP": st.column_config.NumberColumn(
-                        format="%.2f"
-                    ),
-                },
-            )
+                height_val = get_phys_metric(player_row, ["height_inches", "height_in", "height_wo_shoes_inches", "height"])
+                wingspan_val = get_phys_metric(player_row, ["wingspan_inches", "wingspan_in", "wingspan"])
+                ape_val = get_phys_metric(player_row, ["ape_index", "ape_index_adj"])
+                body_fat_val = get_phys_metric(player_row, ["body_fat_pct", "body_fat"])
 
+                st.write(f"**Height:** {format_feet_inches(height_val)}")
+                st.write(f"**Wingspan:** {format_feet_inches(wingspan_val)}")
+                st.write(f"**Ape Index (Adjusted):** {f'{ape_val:.2f}' if ape_val else 'N/A'}")
+                st.write(f"**Body Fat %:** {f'{body_fat_val:.1f}%' if body_fat_val else 'N/A'}")
+
+            st.markdown("---")
+            st.subheader("3-5 Historical Player Comparisons (Cosine Similarity)")
+
+            # Historical Comps Calculation
+            ignore_cols = [
+                "draft_player_name",
+                "draft_year",
+                "drafted_team",
+                "is_training_cohort",
+                "vorp_5y",
+                "reached_min_threshold_5y",
+                "player_tier_5y",
+                "overall_pick",
+                "pos_group",
+            ]
+            feat_cols = [
+                c for c in features_df.columns
+                if c not in ignore_cols and pd.api.types.is_numeric_dtype(features_df[c])
+            ]
+
+            # Filter historical training cohort for comparisons
+            hist_df = features_df[
+                (features_df["is_training_cohort"] == True)
+                & (features_df["draft_player_name"] != selected_player)
+            ].copy()
+
+            if not hist_df.empty and len(feat_cols) > 0:
+                X_hist = hist_df[feat_cols].fillna(0.0)
+                X_target = (
+                    pd.DataFrame([player_row[feat_cols]])
+                    .fillna(0.0)
+                    .values.reshape(1, -1)
+                )
+
+                scaler = StandardScaler()
+                X_hist_scaled = scaler.fit_transform(X_hist)
+                X_target_scaled = scaler.transform(X_target)
+
+                sims = cosine_similarity(X_target_scaled, X_hist_scaled).flatten()
+                hist_df["similarity_score"] = sims
+
+                top_comps = hist_df.sort_values(
+                    by="similarity_score", ascending=False
+                ).head(5)
+
+                comp_display = top_comps[
+                    [
+                        "draft_player_name",
+                        "draft_year",
+                        "pos_group",
+                        "overall_pick",
+                        "vorp_5y",
+                        "similarity_score",
+                    ]
+                ].rename(
+                    columns={
+                        "draft_player_name": "Historical Player",
+                        "draft_year": "Draft Year",
+                        "pos_group": "Position",
+                        "overall_pick": "Actual Pick",
+                        "vorp_5y": "Actual 5Y VORP",
+                        "similarity_score": "Similarity Match",
+                    }
+                )
+
+                st.dataframe(
+                    comp_display,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Similarity Match": st.column_config.NumberColumn(format="%.3f"),
+                        "Actual 5Y VORP": st.column_config.NumberColumn(format="%.2f"),
+                    },
+                )
 
 # ==========================================
 # PAGE 3: MODEL VS. DRAFT
@@ -345,7 +402,7 @@ elif page == "Model vs. Draft":
             y="model_rank",
             hover_name="draft_player_name",
             color="pos_group",
-            size="plot_size",  # Use non-negative plot_size here
+            size="plot_size",
             size_max=15,
             title="Model Rank vs. Actual Draft Pick",
             labels={
@@ -364,6 +421,60 @@ elif page == "Model vs. Draft":
             )
         )
         st.plotly_chart(fig, use_container_width=True)
+
+        col_steals, col_reaches = st.columns(2)
+
+        with col_steals:
+            st.subheader("Best Steals (Model Loved, Drafted Late)")
+            steals_df = df_eval.sort_values(
+                by="draft_disagreement", ascending=False
+            ).head(5)
+            st.dataframe(
+                steals_df[
+                    [
+                        "draft_player_name",
+                        "draft_year",
+                        "overall_pick",
+                        "model_rank",
+                        "pred_vorp_5y",
+                    ]
+                ].rename(
+                    columns={
+                        "draft_player_name": "Player",
+                        "overall_pick": "Draft Pick",
+                        "model_rank": "Model Rank",
+                        "pred_vorp_5y": "Pred VORP",
+                    }
+                ),
+                hide_index=True,
+                use_container_width=True,
+            )
+
+        with col_reaches:
+            st.subheader("Biggest Reaches (Drafted Early, Model Hated)")
+            reaches_df = df_eval.sort_values(
+                by="draft_disagreement", ascending=True
+            ).head(5)
+            st.dataframe(
+                reaches_df[
+                    [
+                        "draft_player_name",
+                        "draft_year",
+                        "overall_pick",
+                        "model_rank",
+                        "pred_vorp_5y",
+                    ]
+                ].rename(
+                    columns={
+                        "draft_player_name": "Player",
+                        "overall_pick": "Draft Pick",
+                        "model_rank": "Model Rank",
+                        "pred_vorp_5y": "Pred VORP",
+                    }
+                ),
+                hide_index=True,
+                use_container_width=True,
+            )
 
 
 # ==========================================
@@ -416,12 +527,13 @@ elif page == "About":
         """
         ### Methodology
         This NBA Draft Projection System generates 5-Year VORP (Value Over Replacement Player) forecasts 
-        for college prospects using strictly **pre-draft** inputs.
+        and calibrated rotation probabilities for prospects using strictly **pre-draft** inputs.
 
         #### Key Modeling Components:
         1. **70/30 Hybrid Ensemble:** Blends gradient boosted trees (LightGBM) with regularized linear regression (Ridge) to balance non-linear interaction learning with baseline stability.
-        2. **Height-Gated Physical Scaling:** Applies a non-linear cubic penalty to physical metrics (`ape_index`) for undersized prospects (< 6'2") to prevent small guards from receiving unearned SHAP feature boosts.
-        3. **Target Variable:** 5-Year Cumulative NBA VORP constructed with strict thresholding to eliminate career-length skew.
+        2. **Calibrated Floor Model:** Employs standardized Logistic Regression with Platt Scaling to calculate true rotation probability floor percentages.
+        3. **Height-Gated Physical Scaling:** Applies non-linear continuous interaction scaling to physical metrics (`ape_index`) for undersized prospects to manage position penalties naturally.
+        4. **Target Variable:** 5-Year Cumulative NBA VORP constructed with strict thresholding to eliminate career-length skew.
         
         #### Data Pipeline & Infrastructure:
         * **Storage & Warehouse:** Databricks Unity Catalog (`nba_draft.analytics`)
