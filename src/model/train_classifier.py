@@ -22,20 +22,22 @@ def train_calibrated_classifier():
 
     df = pd.read_parquet(data_path)
 
-    # 1. High-Signal Floor Features
+    # 1. High-Signal Floor Features (Aligned with Per-100 & Composite Metrics)
     curated_features = [
         "age_at_draft",
         "rec_rank_log",
-        "bpm_sos_adj",
         "college_bpm",
+        "bpm_pos_zscore",
+        "usage_efficiency_index",
+        "scoring_efficiency_index",
         "FT_per_shrunk",
         "TP_per_shrunk",
         "height_in_z",
         "stl_per_z",
         "blk_per_z",
         "AST_per_z",
-        "usg_x_eff",
         "touch_divergence",
+        "TO_res",
     ]
 
     feature_cols = [c for c in curated_features if c in df.columns]
@@ -51,7 +53,7 @@ def train_calibrated_classifier():
     y_train_full = train_df["reached_min_threshold_5y"].astype(int)
     groups = train_df["draft_year"]
 
-    # Base Estimator: Standardized Logistic Regression Pipeline (Silences warnings & normalizes feature scales)
+    # Base Estimator: Standardized Logistic Regression Pipeline
     base_clf = make_pipeline(
         StandardScaler(),
         LogisticRegression(C=0.2, solver="lbfgs", max_iter=1000, random_state=42)

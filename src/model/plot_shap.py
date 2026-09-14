@@ -28,27 +28,36 @@ def generate_all_shap_plots():
     df = pd.read_parquet(features_path)
     artifact = joblib.load(model_path)
 
-    # Resolve model object from dictionary or direct object
-    lgb_model = artifact.get("lgb_model") if isinstance(artifact, dict) else artifact
+    # Resolve LightGBM model and explicit feature list from artifact
+    if isinstance(artifact, dict):
+        lgb_model = artifact.get("lgb_model")
+        model_features = artifact.get("features")
+    else:
+        lgb_model = artifact
+        model_features = None
 
     if lgb_model is None:
         print("Error: Could not retrieve LightGBM model from artifact.")
         return
 
-    ignore_cols = [
-        "draft_player_name", "draft_year", "drafted_team", "is_training_cohort",
-        "vorp_5y", "reached_min_threshold_5y", "player_tier_5y", "overall_pick",
-        "pos_group", "nba_position", "pos_bucket", "season"
-    ]
-    
-    # Extract feature columns used in training
-    model_features = [
-        c for c in df.columns 
-        if c not in ignore_cols and pd.api.types.is_numeric_dtype(df[c])
-    ]
+    # Fallback only if artifact didn't store the feature list
+    if not model_features:
+        ignore_cols = [
+            "draft_player_name", "draft_year", "drafted_team", "is_training_cohort",
+            "vorp_5y", "reached_min_threshold_5y", "player_tier_5y", "overall_pick",
+            "pos_group", "nba_position", "pos_bucket", "season"
+        ]
+        model_features = [
+            c for c in df.columns 
+            if c not in ignore_cols and pd.api.types.is_numeric_dtype(df[c])
+        ]
 
     # Initialize SHAP Tree Explainer
     explainer = shap.TreeExplainer(lgb_model)
+
+    # Clean draft_year for safe filtering
+    if "draft_year" in df.columns:
+        df["draft_year"] = pd.to_numeric(df["draft_year"], errors="coerce").fillna(0).astype(int)
 
     # Filter for target draft classes (2020 through 2026)
     target_years = range(2020, 2027)
@@ -64,7 +73,6 @@ def generate_all_shap_plots():
         if year_df.empty:
             continue
 
-        # Create target year directory (e.g. data/shap_plots/2026/)
         year_dir = os.path.join(base_output_dir, str(year))
         os.makedirs(year_dir, exist_ok=True)
 
@@ -73,8 +81,8 @@ def generate_all_shap_plots():
             file_safe_name = sanitize_filename(player_name)
             output_file = os.path.join(year_dir, f"{file_safe_name}.png")
 
-            # Extract feature vector for single player
-            X_player = pd.DataFrame([row[model_features]]).fillna(0.0)
+            # Extract exact feature vector and force to float to prevent LightGBM dtype errors
+            X_player = pd.DataFrame([row[model_features]]).fillna(0.0).astype(float)
 
             # Calculate SHAP values for the player
             shap_values = explainer(X_player)

@@ -42,7 +42,7 @@ def process_position_and_archetypes(df: pd.DataFrame) -> pd.DataFrame:
 
     # 1. Height Parsing & Missingness Reporting
     raw_height_col = None
-    for col in ["height", "height_inches", "height_wo_shoes_inches", "ht"]:
+    for col in ["height_inches", "height", "height_wo_shoes_inches", "ht"]:
         if col in df.columns:
             raw_height_col = col
             break
@@ -58,30 +58,34 @@ def process_position_and_archetypes(df: pd.DataFrame) -> pd.DataFrame:
     # Fill remaining missing height defaults to 6'6" (78 inches)
     df["height_in"] = df["height_in"].fillna(78.0)
 
-    # 2. Three Rate Calculation: TPA / (TPA + twoPA)
-    if "TPA" in df.columns and "twoPA" in df.columns:
+    # 2. Three Rate Calculation
+    if "three_par" in df.columns:
+        df["three_rate"] = pd.to_numeric(df["three_par"], errors="coerce").fillna(0.0)
+    elif "TPA" in df.columns and "twoPA" in df.columns:
         tpa = pd.to_numeric(df["TPA"], errors="coerce").fillna(0.0)
         twopa = pd.to_numeric(df["twoPA"], errors="coerce").fillna(0.0)
         df["three_rate"] = np.where((tpa + twopa) > 0, tpa / (tpa + twopa), 0.0)
-    elif "fg3a_per_40" in df.columns and "fg2a_per_40" in df.columns:
-        fg3a = pd.to_numeric(df["fg3a_per_40"], errors="coerce").fillna(0.0)
-        fg2a = pd.to_numeric(df["fg2a_per_40"], errors="coerce").fillna(0.0)
-        df["three_rate"] = np.where((fg3a + fg2a) > 0, fg3a / (fg3a + fg2a), 0.0)
     else:
         df["three_rate"] = 0.0
 
     # Season mapping for within-season Z-score scaling
     season_col = "draft_year" if "draft_year" in df.columns else ("season" if "season" in df.columns else None)
 
-    # Map target statistical columns
+    # Map target statistical columns (Priority: Per-100 -> Per-40 -> Raw)
+    def resolve_col(candidates):
+        for c in candidates:
+            if c in df.columns:
+                return c
+        return None
+
     stats_map = {
         "height_in": "height_in",
-        "blk_per": "blk_per_40" if "blk_per_40" in df.columns else ("blk_per" if "blk_per" in df.columns else None),
-        "ORB_per": "orb_per_40" if "orb_per_40" in df.columns else ("ORB_per" if "ORB_per" in df.columns else None),
-        "DRB_per": "drb_per_40" if "drb_per_40" in df.columns else ("DRB_per" if "DRB_per" in df.columns else None),
+        "blk_per": resolve_col(["blk_per_100", "blk_per_40", "blk_per"]),
+        "ORB_per": resolve_col(["orb_per_100", "reb_per_100", "orb_per_40", "ORB_per"]),
+        "DRB_per": resolve_col(["drb_per_100", "reb_per_100", "drb_per_40", "DRB_per"]),
         "three_rate": "three_rate",
-        "AST_per": "ast_per_40" if "ast_per_40" in df.columns else ("AST_per" if "AST_per" in df.columns else None),
-        "stl_per": "stl_per_40" if "stl_per_40" in df.columns else ("stl_per" if "stl_per" in df.columns else None),
+        "AST_per": resolve_col(["ast_per_100", "ast_per_40", "AST_per"]),
+        "stl_per": resolve_col(["stl_per_100", "stl_per_40", "stl_per"]),
     }
 
     # Within-season Z-score Standardization
@@ -97,7 +101,7 @@ def process_position_and_archetypes(df: pd.DataFrame) -> pd.DataFrame:
         else:
             df[f"{key}_z"] = 0.0
 
-    # Archetype Scoring Weights
+    # Fallback Positional Archetype Scores
     df["score_Big"] = (
         1.1 * df["height_in_z"]
         + 1.0 * df["blk_per_z"]
@@ -125,12 +129,12 @@ def process_position_and_archetypes(df: pd.DataFrame) -> pd.DataFrame:
         - 0.5 * df["blk_per_z"]
     )
 
-    # Argmax for UI filter bucket
-    df["pos_bucket"] = (
-        df[["score_Big", "score_Wing", "score_Guard"]]
-        .idxmax(axis=1)
-        .str.replace("score_", "")
-    )
+    if "pos_group" not in df.columns:
+        df["pos_group"] = (
+            df[["score_Big", "score_Wing", "score_Guard"]]
+            .idxmax(axis=1)
+            .str.replace("score_", "")
+        )
 
     return df
 
@@ -157,10 +161,6 @@ def process_feature_fixes(df: pd.DataFrame) -> pd.DataFrame:
         made_3p = pd.to_numeric(df["TP_made"], errors="coerce").fillna(0.0)
         att_3p = pd.to_numeric(df["TPA"], errors="coerce").fillna(0.0)
         df["TP_per_shrunk"] = e_bayes_shrinkage(made_3p, att_3p, k=100)
-    elif "fg3m_per_40" in df.columns and "fg3a_per_40" in df.columns:
-        made_3p = pd.to_numeric(df["fg3m_per_40"], errors="coerce").fillna(0.0)
-        att_3p = pd.to_numeric(df["fg3a_per_40"], errors="coerce").fillna(0.0)
-        df["TP_per_shrunk"] = e_bayes_shrinkage(made_3p, att_3p, k=100)
     elif "fg3_pct" in df.columns:
         df["TP_per_shrunk"] = pd.to_numeric(df["fg3_pct"], errors="coerce").fillna(0.0)
     else:
@@ -169,10 +169,6 @@ def process_feature_fixes(df: pd.DataFrame) -> pd.DataFrame:
     if "FT_made" in df.columns and "FTA" in df.columns:
         made_ft = pd.to_numeric(df["FT_made"], errors="coerce").fillna(0.0)
         att_ft = pd.to_numeric(df["FTA"], errors="coerce").fillna(0.0)
-        df["FT_per_shrunk"] = e_bayes_shrinkage(made_ft, att_ft, k=250)
-    elif "ftm_per_40" in df.columns and "fta_per_40" in df.columns:
-        made_ft = pd.to_numeric(df["ftm_per_40"], errors="coerce").fillna(0.0)
-        att_ft = pd.to_numeric(df["fta_per_40"], errors="coerce").fillna(0.0)
         df["FT_per_shrunk"] = e_bayes_shrinkage(made_ft, att_ft, k=250)
     elif "ft_pct" in df.columns:
         df["FT_per_shrunk"] = pd.to_numeric(df["ft_pct"], errors="coerce").fillna(0.0)
@@ -183,8 +179,8 @@ def process_feature_fixes(df: pd.DataFrame) -> pd.DataFrame:
     df["touch_divergence"] = df["FT_per_shrunk"] - df["TP_per_shrunk"]
 
     # 4. Residualize Turnovers on Usage
-    to_col = "TO_per" if "TO_per" in df.columns else ("tov_per_40" if "tov_per_40" in df.columns else None)
-    usg_col = "usg" if "usg" in df.columns else ("usage_pct" if "usage_pct" in df.columns else None)
+    to_col = "TO_per" if "TO_per" in df.columns else ("tov_per_100" if "tov_per_100" in df.columns else None)
+    usg_col = "usage_pct" if "usage_pct" in df.columns else ("usg" if "usg" in df.columns else None)
 
     if to_col and usg_col:
         valid_mask = df[to_col].notna() & df[usg_col].notna()
@@ -197,50 +193,33 @@ def process_feature_fixes(df: pd.DataFrame) -> pd.DataFrame:
     else:
         df["TO_res"] = 0.0
 
-    # 5. Base Interaction Terms
-    bpm_col = "college_bpm" if "college_bpm" in df.columns else ("bpm" if "bpm" in df.columns else None)
-    age_col = "age_at_draft" if "age_at_draft" in df.columns else ("age" if "age" in df.columns else None)
-    ts_col = "ts_pct" if "ts_pct" in df.columns else ("ts" if "ts" in df.columns else None)
-
-    age_val = pd.to_numeric(df[age_col], errors="coerce").fillna(20.0) if age_col else 20.0
-    bpm_val = pd.to_numeric(df[bpm_col], errors="coerce").fillna(0.0) if bpm_col else 0.0
-    usg_val = pd.to_numeric(df[usg_col], errors="coerce").fillna(20.0) if usg_col else 20.0
-    ts_val = pd.to_numeric(df[ts_col], errors="coerce").fillna(0.5) if ts_col else 0.5
-
-    df["age_x_prod"] = age_val * bpm_val
-    df["usg_x_eff"] = usg_val * ts_val
-
-    # 6. Apply Strength of Schedule (SOS) Scaling
-    if bpm_col and "sos" in df.columns:
-        df["sos_numeric"] = pd.to_numeric(df["sos"], errors="coerce").fillna(0.0)
-        df["sos_z"] = (df["sos_numeric"] - df["sos_numeric"].mean()) / (df["sos_numeric"].std() + 1e-6)
-        df["bpm_sos_adj"] = bpm_val * (1.0 + (df["sos_z"] * 0.10))
-    else:
-        df["bpm_sos_adj"] = bpm_val
-
-    # 7. PURE ML CONTINUOUS INTERACTIONS (No Hard Rules)
-    # Height Z-score acts as a multiplier: tall players get positive values, short players get negative values.
-    # Shooting & Assist stats are multiplied by this continuous physical score.
-    df["ast_height_multiplier"] = df["AST_per_z"] * df["height_in_z"]
-    df["stretch_factor"] = df["height_in_z"] * df["TP_per_shrunk"]
-    
-    mean_ts = df["ts_pct"].mean() if "ts_pct" in df.columns else 0.53
-    df["usage_efficiency_burden"] = usg_val * (ts_val - mean_ts)
-
     return df
 
 
 def export_features_to_parquet():
     print("Connecting to Databricks...")
+    
+    hostname = os.getenv("DATABRICKS_SERVER_HOSTNAME")
+    http_path = os.getenv("DATABRICKS_HTTP_PATH")
+    token = os.getenv("DATABRICKS_TOKEN")
+
+    if hostname and hostname.startswith("https://"):
+        hostname = hostname.replace("https://", "")
+
     connection = sql.connect(
-        server_hostname=os.getenv("DATABRICKS_SERVER_HOSTNAME"),
-        http_path=os.getenv("DATABRICKS_HTTP_PATH"),
-        access_token=os.getenv("DATABRICKS_TOKEN"),
+        server_hostname=hostname,
+        http_path=http_path,
+        access_token=token,
     )
     cursor = connection.cursor()
 
-    print("[PROCESS] Querying nba_draft.analytics.prospect_features...")
-    cursor.execute("SELECT * FROM nba_draft.analytics.prospect_features")
+    # --- FILTER OUT NON-COLLEGE PROSPECTS ---
+    print("[PROCESS] Querying nba_draft.analytics.prospect_features (filtering out non-college prospects)...")
+    cursor.execute("""
+        SELECT * 
+        FROM nba_draft.analytics.prospect_features 
+        WHERE is_non_college_prospect = 0;
+    """)
     rows = cursor.fetchall()
 
     columns = [desc[0] for desc in cursor.description]
@@ -253,7 +232,7 @@ def export_features_to_parquet():
     print("[PROCESS] Applying position archetypes and parsing heights...")
     df = process_position_and_archetypes(df)
 
-    print("[PROCESS] Calculating shrinkage, turnover residualization, and interactions...")
+    print("[PROCESS] Calculating shrinkage and turnover residualization...")
     df = process_feature_fixes(df)
 
     os.makedirs("data/processed", exist_ok=True)
@@ -264,19 +243,24 @@ def export_features_to_parquet():
     if os.path.exists(override_path):
         overrides = pd.read_csv(override_path)
         
-        # Keep rows with valid non-empty manual overrides
         overrides = overrides[
             overrides["manual_override_position"].notna() 
-            & (overrides["manual_override_position"].str.strip() != "")
+            & (overrides["manual_override_position"].astype(str).str.strip() != "")
         ]
         
-        # Build override mapping dictionary: {"Cade Cunningham": "Guard", ...}
-        override_map = dict(zip(overrides["draft_player_name"], overrides["manual_override_position"].str.strip()))
+        override_map = dict(zip(
+            overrides["draft_player_name"], 
+            overrides["manual_override_position"].astype(str).str.strip()
+        ))
         
-        # Apply the override mapping
         if "draft_player_name" in df.columns:
-            df["pos_group"] = df["draft_player_name"].map(override_map).fillna(df["pos_group"])
-            print(f"✅ Successfully applied {len(override_map)} manual position overrides from {override_path}.")
+            applied_count = 0
+            for player, pos in override_map.items():
+                mask = df["draft_player_name"] == player
+                if mask.any():
+                    df.loc[mask, "pos_group"] = pos
+                    applied_count += 1
+            print(f"✅ Successfully applied {applied_count} manual position overrides from '{override_path}'.")
 
     output_path = "data/processed/features.parquet"
     df.to_parquet(output_path, index=False)
