@@ -64,10 +64,14 @@ model_artifact = load_model()
 
 # Navigation Sidebar
 st.sidebar.title("Draft Intelligence")
+st.sidebar.markdown("Created by **Kevin Shiao**")
+
 page = st.sidebar.radio(
     "Navigation",
     ["Big Board", "Player Card", "Model vs. Draft", "Backtest", "About"],
 )
+
+
 
 st.sidebar.markdown("---")
 st.sidebar.caption("Powered by LightGBM & Ridge Ensemble | Databricks & MLflow")
@@ -617,6 +621,15 @@ elif page == "Backtest":
 # PAGE 5: ABOUT
 # ==========================================
 elif page == "About":
+    st.header("About the Developer")
+    st.write("""
+    I built this project out of a genuine passion for both data science and basketball. I wanted to see if it was possible to engineer an objective, data-driven system that could project how college prospects might perform in the NBA using strictly their physical attributes, collegiate efficiency metrics, and developmental age profiles.
+
+    By combining cloud data engineering in Databricks with calibrated machine learning ensembles, this project explores where statistical models align with, and where they outperform, traditional draft consensus.
+
+    Feel free to connect with me on LinkedIn: [linkedin.com/in/kevin-shiao/](https://www.linkedin.com/in/kevin-shiao/)
+    """)
+    
     st.title("Methodology & Architecture")
 
     st.markdown(
