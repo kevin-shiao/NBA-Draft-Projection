@@ -1,0 +1,16 @@
+{
+    "lgb_params": {
+        "objective": "regression",
+        "metric": "rmse",
+        "num_leaves": 18,
+        "min_child_samples": 18,
+        "learning_rate": 0.016075281473323176,
+        "colsample_bytree": 0.7896053451484064,
+        "subsample": 0.8274130928334033,
+        "verbosity": -1,
+        "random_state": 42
+    },
+    "ridge_alpha": 14.00330154403612,
+    "lgb_weight": 0.43393246111331,
+    "ridge_weight": 0.56606753888669
+}

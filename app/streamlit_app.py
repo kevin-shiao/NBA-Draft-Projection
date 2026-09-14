@@ -565,6 +565,18 @@ elif page == "Backtest":
 
         st.dataframe(backtest_data, use_container_width=True, hide_index=True)
 
+        st.markdown("---")
+        st.subheader("📚 Metrics Glossary")
+        st.markdown(
+            """
+            * **Spearman Rho (Rank Correlation):** Evaluates how well the model's overall player rankings mirror reality, ignoring absolute VORP predictions. A score of 1.0 means perfect ranking; 0.0 means completely random.
+            * **NDCG (Normalized Discounted Cumulative Gain):** A search-engine metric adapted for the draft. It heavily penalizes misses at the very top of the board. 
+                * **NDCG@10:** Measures accuracy strictly within the top 10 picks. Whiffing on the #2 overall player hurts the score significantly more than whiffing on the #9 player.
+                * **NDCG@30:** Applies the same sliding-scale penalty logic across the entire first round.
+            * **Top 10 Hit Rate (Found in Top 30):** A straightforward hit-or-miss metric. Out of the 10 most productive NBA players in reality, how many did the model successfully project *somewhere* within its first-round board (top 30)? 
+            """
+        )
+
 
 # ==========================================
 # PAGE 5: ABOUT

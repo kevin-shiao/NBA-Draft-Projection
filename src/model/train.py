@@ -1,4 +1,5 @@
 import os
+import json
 import joblib
 import numpy as np
 import pandas as pd
@@ -10,7 +11,7 @@ from scipy.stats import spearmanr
 import mlflow
 import mlflow.lightgbm
 from dotenv import load_dotenv
-import json
+
 os.makedirs("models", exist_ok=True)
 
 # Load Environment Variables
@@ -23,6 +24,7 @@ if "DATABRICKS_SERVER_HOSTNAME" in os.environ and "DATABRICKS_HOST" not in os.en
 
 if "DATABRICKS_TOKEN" not in os.environ and "DATABRICKS_PERSONAL_ACCESS_TOKEN" in os.environ:
     os.environ["DATABRICKS_TOKEN"] = os.environ["DATABRICKS_PERSONAL_ACCESS_TOKEN"]
+
 
 def compute_ranking_metrics(y_true, y_pred, draft_years, overall_picks=None):
     """
@@ -45,7 +47,6 @@ def compute_ranking_metrics(y_true, y_pred, draft_years, overall_picks=None):
         yt = group['y_true'].values
         yp = group['y_pred'].values
 
-        # Make targets non-negative for NDCG (sub-replacement = 0 relevance)
         yt_ndcg = np.maximum(yt, 0)
 
         # Model Metrics
@@ -59,7 +60,7 @@ def compute_ranking_metrics(y_true, y_pred, draft_years, overall_picks=None):
 
         # Draft Order Baseline Metrics
         if overall_picks is not None and not group['overall_pick'].isna().all():
-            yd = -group['overall_pick'].values  # Negated so pick #1 is highest rank
+            yd = -group['overall_pick'].values
             draft_rhos.append(spearmanr(yt, yd)[0])
             draft_ndcg10s.append(ndcg_score([yt_ndcg], [yd], k=10))
             draft_ndcg30s.append(ndcg_score([yt_ndcg], [yd], k=30))
@@ -113,7 +114,7 @@ def run_training_pipeline():
 
     df = pd.read_parquet(data_path)
 
-    # 3. Explicit Leakage Prevention: Exclude post-draft, non-feature, and UI bucket columns
+    # 3. Explicit Leakage Prevention
     ignore_cols = [
         "draft_player_name",
         "draft_year",
@@ -122,11 +123,13 @@ def run_training_pipeline():
         "vorp_5y",
         "reached_min_threshold_5y",
         "player_tier_5y",
-        "overall_pick",  # Excluded from training features
-        "nba_position",  # Excluded from training features
+        "overall_pick",
+        "nba_position",
         "pos_group",
-        "pos_bucket",    # Used for frontend UI filtering only
+        "pos_bucket",
         "season",
+        "mp_5y",
+        "seasons_played_5y",
     ]
 
     target_col = "vorp_5y"
@@ -140,19 +143,49 @@ def run_training_pipeline():
     y_train_full = pd.to_numeric(train_df[target_col], errors="coerce").fillna(0.0).values
     groups = train_df["draft_year"].values
 
-    lgb_params = {
-        "objective": "regression",
-        "metric": "rmse",
-        "num_leaves": 15,
-        "min_child_samples": 15,       # Lowered slightly to capture nuanced archetype interactions
-        "learning_rate": 0.02,         # Slowed down for better generalization
-        "colsample_bytree": 0.8,       # Force trees to use different features (prevents over-reliance on usage)
-        "subsample": 0.8,              # Bagging to prevent overfitting to specific players
-        "verbosity": -1,
-        "random_state": 42,
-    }
+    # 4. Load Tuned Hyperparameters (or fallback to default baseline)
+    # 4. Load Tuned Hyperparameters (or fallback to default baseline)
+    best_params_path = "models/best_params.json"
+    if os.path.exists(best_params_path):
+        with open(best_params_path, "r") as f:
+            config = json.load(f)
+        lgb_params = config["lgb_params"]
+        ridge_alpha = config.get("ridge_alpha", 20.0)
+        lgb_weight = config.get("lgb_weight", 0.70)
+        ridge_weight = config.get("ridge_weight", 0.30)
+        print(f"  [CONFIG] Successfully loaded tuned hyperparameters from '{best_params_path}'")
+    else:
+        lgb_params = {
+            "objective": "regression",
+            "metric": "rmse",
+            "num_leaves": 15,
+            "min_child_samples": 15,
+            "learning_rate": 0.02,
+            "colsample_bytree": 0.8,
+            "subsample": 0.8,
+            "verbosity": -1,
+            "random_state": 42,
+        }
+        ridge_alpha = 20.0
+        lgb_weight = 0.70
+        ridge_weight = 0.30
+        print("  [CONFIG] 'models/best_params.json' not found. Using default parameters.")
 
-    # 4. GroupKFold Out-Of-Fold Cross-Validation (2008-2019)
+    # --- NEW: APPLY MONOTONIC CONSTRAINTS FOR AGE ---
+    # This ensures older players are never artificially boosted over younger players
+    constraints = []
+    for col in feature_cols:
+        if col == "age_at_draft":
+            constraints.append(-1)  # -1 forces strictly decreasing/neutral impact
+        else:
+            constraints.append(0)   # 0 allows the tree to learn naturally
+
+    lgb_params["monotone_constraints"] = tuple(constraints)
+    lgb_params["monotone_constraints_method"] = "advanced"
+
+    print(f"  [ENSEMBLE SPLIT] LightGBM: {lgb_weight:.1%} | Ridge: {ridge_weight:.1%} (Alpha = {ridge_alpha:.1f})")
+
+    # 5. GroupKFold Out-Of-Fold Cross-Validation (2008-2019)
     gkf = GroupKFold(n_splits=5)
     oof_preds = np.zeros(len(train_df))
 
@@ -164,20 +197,19 @@ def run_training_pipeline():
         lgb_m = lgb.LGBMRegressor(**lgb_params, n_estimators=300)
         lgb_m.fit(X_tr, y_tr)
 
-        ridge_m = Ridge(alpha=20.0, random_state=42)
+        ridge_m = Ridge(alpha=ridge_alpha, random_state=42)
         ridge_m.fit(X_tr, y_tr)
 
-        oof_preds[val_idx] = (0.70 * lgb_m.predict(X_va)) + (0.30 * ridge_m.predict(X_va))
+        oof_preds[val_idx] = (lgb_weight * lgb_m.predict(X_va)) + (ridge_weight * ridge_m.predict(X_va))
 
     train_df["oof_pred"] = oof_preds
     train_df["residual"] = y_train_full - oof_preds
 
-    # 5. Out-Of-Fold Residual Diagnostics Table
+    # 6. Out-Of-Fold Residual Diagnostics Table
     print("\n==========================================")
     print(" OUT-OF-FOLD RESIDUAL DIAGNOSTICS")
     print("==========================================")
 
-    # Subgroup bins (Removed explicit labels so pandas uses the actual interval ranges safely)
     age_col = "age_at_draft" if "age_at_draft" in train_df.columns else "age"
     usg_col = "usg" if "usg" in train_df.columns else "usage_pct"
     rec_col = "rec_rank_clean" if "rec_rank_clean" in train_df.columns else "rec_rank_log"
@@ -187,7 +219,11 @@ def run_training_pipeline():
     if usg_col in train_df.columns:
         train_df["usg_tercile"] = pd.qcut(train_df[usg_col], q=3, duplicates="drop")
     if rec_col in train_df.columns:
-        train_df["rec_rank_tier"] = pd.qcut(train_df[rec_col], q=3, duplicates="drop")
+        train_df["rec_rank_tier"] = pd.cut(
+            train_df[rec_col],
+            bins=[-1, 25, 100, 1000],
+            labels=["5-Star (Top 25)", "4-Star (26-100)", "3-Star / Unranked (100+)"]
+    )
 
     for grp in ["pos_bucket", "age_band", "usg_tercile", "rec_rank_tier"]:
         if grp in train_df.columns:
@@ -197,14 +233,14 @@ def run_training_pipeline():
             diag["bias_flag"] = diag["t_stat"].apply(lambda x: "*** (BIAS)" if abs(x) > 2.0 else "")
             print(diag[["mean", "std", "count", "t_stat", "bias_flag"]])
 
-    # 6. Evaluation vs Draft Order Baseline
+    # 7. Evaluation vs Draft Order Baseline
     overall_picks_val = train_df["overall_pick"].values if "overall_pick" in train_df.columns else None
     eval_metrics = compute_ranking_metrics(y_train_full, oof_preds, train_df["draft_year"].values, overall_picks_val)
 
     metrics_export_path = "models/metrics.json"
     with open(metrics_export_path, "w") as f:
         json.dump(eval_metrics, f, indent=4)
-    print(f"  -> [SUCCESS] Exported backtest metrics to '{metrics_export_path}'")
+    print(f"\n  -> [SUCCESS] Exported backtest metrics to '{metrics_export_path}'")
     
     print("\n==========================================")
     print(" MODEL PERFORMANCE VS DRAFT ORDER BASELINE")
@@ -214,20 +250,19 @@ def run_training_pipeline():
     print(f"NDCG@30        : Model = {eval_metrics['ndcg_30']:.3f} | Draft Order = {eval_metrics.get('draft_ndcg_30', 0):.3f}")
     print(f"Top-10 Hit Rate: Model = {eval_metrics['hit_rate']:.3f} | Draft Order = {eval_metrics.get('draft_hit_rate', 0):.3f}")
 
-    # 7. Start MLflow Run
-    with mlflow.start_run(run_name="70_30_GroupKFold_Ensemble") as run:
+    # 8. Start MLflow Run
+    with mlflow.start_run(run_name="Tuned_GroupKFold_Ensemble") as run:
         print(f"\n  [MLflow] Active Run ID: {run.info.run_id}")
 
         mlflow.log_params(lgb_params)
         mlflow.log_params({
-            "model_type": "70/30 Ensemble (LightGBM + Ridge)",
-            "ridge_alpha": 20.0,
-            "lgb_weight": 0.70,
-            "ridge_weight": 0.30,
+            "model_type": f"{lgb_weight:.0%}/{ridge_weight:.0%} Ensemble (LightGBM + Ridge)",
+            "ridge_alpha": ridge_alpha,
+            "lgb_weight": lgb_weight,
+            "ridge_weight": ridge_weight,
             "num_features": len(feature_cols),
         })
 
-        # Log Metrics
         mlflow.log_metric("oof_spearman_rho", eval_metrics["spearman_rho"])
         mlflow.log_metric("oof_ndcg_10", eval_metrics["ndcg_10"])
         mlflow.log_metric("oof_ndcg_30", eval_metrics["ndcg_30"])
@@ -237,38 +272,36 @@ def run_training_pipeline():
             mlflow.log_metric("draft_spearman_rho", eval_metrics["draft_spearman_rho"])
             mlflow.log_metric("draft_ndcg_10", eval_metrics["draft_ndcg_10"])
 
-        # 8. Retrain Final Ensemble on All Historical Data (2008-2019)
+        # 9. Retrain Final Ensemble on All Historical Data (2008-2019)
         print("\n--- RETRAINING ENSEMBLE ON ALL HISTORICAL DATA (2008-2019) ---")
         final_lgb = lgb.LGBMRegressor(**lgb_params, n_estimators=300)
         final_lgb.fit(X_train_full, y_train_full)
 
-        final_ridge = Ridge(alpha=20.0, random_state=42)
+        final_ridge = Ridge(alpha=ridge_alpha, random_state=42)
         final_ridge.fit(X_train_full, y_train_full)
 
-        # 9. Save Local Model Artifact
-        os.makedirs("models", exist_ok=True)
+        # 10. Save Local Model Artifact
         model_artifact_path = "models/model.joblib"
         artifact = {
             "lgb_model": final_lgb,
             "ridge_model": final_ridge,
-            "lgb_weight": 0.70,
-            "ridge_weight": 0.30,
+            "lgb_weight": lgb_weight,
+            "ridge_weight": ridge_weight,
             "features": feature_cols,
-            "version": "3.0_groupkfold_archetype_shrunk_ensemble",
+            "version": "3.1_tuned_groupkfold_ensemble",
         }
         joblib.dump(artifact, model_artifact_path)
         print(f"  -> Saved local model artifact to '{model_artifact_path}'")
 
-        # 10. Score Unlabeled Target Set (2020+)
+        # 11. Score Unlabeled Target Set (2020+)
         if len(unlabeled_df) > 0:
             X_unlabeled = unlabeled_df[feature_cols].fillna(0.0)
 
             lgb_unlabeled_pred = final_lgb.predict(X_unlabeled)
             ridge_unlabeled_pred = final_ridge.predict(X_unlabeled)
 
-            unlabeled_df["pred_vorp_5y"] = (0.70 * lgb_unlabeled_pred) + (0.30 * ridge_unlabeled_pred)
+            unlabeled_df["pred_vorp_5y"] = (lgb_weight * lgb_unlabeled_pred) + (ridge_weight * ridge_unlabeled_pred)
 
-            # Class Rank
             unlabeled_df["model_rank"] = unlabeled_df.groupby("draft_year")["pred_vorp_5y"].rank(
                 ascending=False, method="min"
             )

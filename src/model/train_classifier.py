@@ -8,7 +8,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import make_pipeline
 from sklearn.metrics import roc_auc_score
-from sklearn.model_selection import GroupKFold
+from sklearn.model_selection import GroupKFold, GridSearchCV
 
 
 def train_calibrated_classifier():
@@ -45,32 +45,57 @@ def train_calibrated_classifier():
     train_df = df[df["is_training_cohort"] == True].copy()
     unlabeled_df = df[df["is_training_cohort"] == False].copy()
 
-    # 2. Out-of-Fold Cross Validation (GroupKFold by Draft Year)
+    # 2. Setup Cross Validation (GroupKFold by Draft Year)
     gkf = GroupKFold(n_splits=5)
-    oof_preds = np.zeros(len(train_df))
     
     X_train_full = train_df[feature_cols].fillna(0.0)
     y_train_full = train_df["reached_min_threshold_5y"].astype(int)
     groups = train_df["draft_year"]
 
-    # Base Estimator: Standardized Logistic Regression Pipeline
+   # --- NEW: GRID SEARCH FOR OPTIMAL C ---
+    print("--- TUNING LOGISTIC REGRESSION HYPERPARAMETERS ---")
+    temp_clf = make_pipeline(
+        StandardScaler(),
+        LogisticRegression(solver="lbfgs", max_iter=1000, random_state=42)
+    )
+    
+    # Test a range of regularization strengths (lower C = stronger penalty)
+    param_grid = {'logisticregression__C': [0.01, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0]}
+    
+    grid = GridSearchCV(
+        estimator=temp_clf,
+        param_grid=param_grid,
+        # WRAP THE GENERATOR IN list() SO IT CAN BE PICKLED ACROSS CORES
+        cv=list(gkf.split(X_train_full, y_train_full, groups=groups)),
+        scoring='roc_auc',
+        n_jobs=-1
+    )
+    grid.fit(X_train_full, y_train_full)
+    
+    best_c = grid.best_params_['logisticregression__C']
+    print(f"  -> Best C found: {best_c} (OOF ROC-AUC: {grid.best_score_:.3f})\n")
+
+    # 3. Base Estimator: Standardized Logistic Regression Pipeline using Best C
     base_clf = make_pipeline(
         StandardScaler(),
-        LogisticRegression(C=0.2, solver="lbfgs", max_iter=1000, random_state=42)
+        LogisticRegression(C=best_c, solver="lbfgs", max_iter=1000, random_state=42)
     )
 
+    oof_preds = np.zeros(len(train_df))
+
+    # 4. Out-of-Fold Calibration Loop
     for fold, (trn_idx, val_idx) in enumerate(gkf.split(X_train_full, y_train_full, groups)):
         X_tr, y_tr = X_train_full.iloc[trn_idx], y_train_full.iloc[trn_idx]
         X_va, y_va = X_train_full.iloc[val_idx], y_train_full.iloc[val_idx]
 
-        calibrator = CalibratedClassifierCV(estimator=base_clf, method="sigmoid", cv=3)
+        calibrator = CalibratedClassifierCV(estimator=base_clf, method="isotonic", cv=3)
         calibrator.fit(X_tr, y_tr)
         oof_preds[val_idx] = calibrator.predict_proba(X_va)[:, 1]
 
     cv_auc = roc_auc_score(y_train_full, oof_preds)
-    print(f"  [5-Fold Out-Of-Fold CV ROC-AUC]: {cv_auc:.3f}")
+    print(f"  [5-Fold Out-Of-Fold CV Calibrated ROC-AUC]: {cv_auc:.3f}")
 
-    # 3. Save Diagnostic Calibration Plot
+    # 5. Save Diagnostic Calibration Plot
     os.makedirs("visualizations", exist_ok=True)
     fig, ax = plt.subplots(figsize=(8, 6))
     CalibrationDisplay.from_predictions(y_train_full, oof_preds, n_bins=5, ax=ax, name="Calibrated Floor Model")
@@ -80,12 +105,12 @@ def train_calibrated_classifier():
     plt.close()
     print("  -> Saved 'visualizations/calibration_curve.png'")
 
-    # 4. Retrain Calibrated Model on Full Historical Data (2008-2019)
+    # 6. Retrain Calibrated Model on Full Historical Data (2008-2019)
     print("\n--- RETRAINING CLASSIFIER ON FULL HISTORICAL DATA (2008-2019) ---")
-    final_calibrated_clf = CalibratedClassifierCV(estimator=base_clf, method="sigmoid", cv=5)
+    final_calibrated_clf = CalibratedClassifierCV(estimator=base_clf, method="isotonic", cv=5)
     final_calibrated_clf.fit(X_train_full, y_train_full)
 
-    # 5. Score Unlabeled Prospects (2020+) & Update predictions.parquet
+    # 7. Score Unlabeled Prospects (2020+) & Update predictions.parquet
     if len(unlabeled_df) > 0:
         predictions_path = "data/processed/predictions.parquet"
         if not os.path.exists(predictions_path):
