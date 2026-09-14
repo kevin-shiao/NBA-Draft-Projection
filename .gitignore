@@ -1,9 +1,12 @@
 .venv/
 .env
-data/raw/
-data/processed
 __pycache__/
 *.pyc
 .DS_Store
 .streamlit/secrets.toml
-data/shap_plots
+
+# Ignore raw data, but track processed datasets and SHAP plots for deployment
+data/raw/
+!data/processed/
+!data/processed/*.parquet
+!data/shap_plots/
