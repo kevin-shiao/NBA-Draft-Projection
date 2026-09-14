@@ -137,7 +137,7 @@ if page == "Big Board":
             "Tier",
             "overall_pick",
             "college_bpm",
-            "pts_per_40",
+            "pts_per_100",
             "ts_pct",
             "age_at_draft",
         ]
@@ -147,7 +147,7 @@ if page == "Big Board":
             "pred_vorp_5y": "Projected 5Y VORP",
             "overall_pick": "Actual Draft Pick",
             "college_bpm": "College BPM",
-            "pts_per_40": "PTS / 40",
+            "pts_per_100": "PTS / 100",
             "ts_pct": "True Shooting %",
             "age_at_draft": "Draft Age",
         }
@@ -170,7 +170,7 @@ if page == "Big Board":
                     format="%.1f%%"
                 ),
                 "College BPM": st.column_config.NumberColumn(format="%.1f"),
-                "PTS / 40": st.column_config.NumberColumn(format="%.1f"),
+                "PTS / 100": st.column_config.NumberColumn(format="%.1f"),
                 "True Shooting %": st.column_config.NumberColumn(format="%.3f"),
                 "Draft Age": st.column_config.NumberColumn(format="%.1f"),
             },
@@ -185,24 +185,27 @@ elif page == "Player Card":
     if features_df.empty:
         st.error("Features dataset not found. Run pipeline steps first.")
     else:
+        # --- RESTRICT SEARCH TO 2020+ PROSPECTS ---
+        prospect_df = features_df[features_df["draft_year"] >= 2020].copy()
+
         # --- FILTER & SEARCH BAR SECTION ---
         col_y, col_p, col_s = st.columns([1, 1, 2])
 
         with col_y:
             available_years = ["All"] + sorted(
-                features_df["draft_year"].dropna().unique().astype(int),
+                prospect_df["draft_year"].dropna().unique().astype(int),
                 reverse=True,
             )
             selected_year = st.selectbox("Filter Draft Year", available_years, index=0)
 
         with col_p:
             available_positions = ["All"] + sorted(
-                features_df["pos_group"].dropna().unique()
+                prospect_df["pos_group"].dropna().unique()
             )
             selected_pos = st.selectbox("Filter Position", available_positions, index=0)
 
-        # Apply filters to build filtered player list
-        filtered_df = features_df.copy()
+        # Apply UI filters to build selectable player list
+        filtered_df = prospect_df.copy()
         if selected_year != "All":
             filtered_df = filtered_df[filtered_df["draft_year"] == selected_year]
         if selected_pos != "All":
@@ -215,9 +218,8 @@ elif page == "Player Card":
                 st.warning("No prospects match the selected Year & Position filters.")
                 selected_player = None
             else:
-                # Streamlit selectbox allows direct typing/searching
                 selected_player = st.selectbox(
-                    "Search / Select Prospect",
+                    "Search / Select Prospect (2020+)",
                     filtered_player_list,
                     help="Type a player's name directly in the box to search!"
                 )
@@ -266,15 +268,15 @@ elif page == "Player Card":
             with col_stat:
                 st.subheader("College Production Metrics")
                 st.write(f"**College BPM:** {player_row.get('college_bpm', 0.0):.2f}")
-                st.write(f"**Points / 40:** {player_row.get('pts_per_40', 0.0):.1f}")
-                st.write(f"**Rebounds / 40:** {player_row.get('reb_per_40', 0.0):.1f}")
-                st.write(f"**Assists / 40:** {player_row.get('ast_per_40', 0.0):.1f}")
+                st.write(f"**Points / 100:** {player_row.get('pts_per_100', 0.0):.1f}")
+                st.write(f"**Rebounds / 100:** {player_row.get('reb_per_100', 0.0):.1f}")
+                st.write(f"**Assists / 100:** {player_row.get('ast_per_100', 0.0):.1f}")
                 st.write(f"**True Shooting %:** {player_row.get('ts_pct', 0.0):.3f}")
 
             with col_phys:
                 st.subheader("Anthropometrics")
 
-                # Converts raw inches (e.g. 81.0) to standard feet/inches format (e.g. 6'9")
+                # Converts raw inches to standard feet/inches format
                 def format_feet_inches(val_inches):
                     if not val_inches or val_inches <= 0.0:
                         return "N/A (No Combine Data)"
@@ -303,24 +305,16 @@ elif page == "Player Card":
             st.markdown("---")
             st.subheader("3-5 Historical Player Comparisons (Cosine Similarity)")
 
-            # Historical Comps Calculation
+            # Historical Comps Calculation against 2009-2019 baseline
             ignore_cols = [
-                "draft_player_name",
-                "draft_year",
-                "drafted_team",
-                "is_training_cohort",
-                "vorp_5y",
-                "reached_min_threshold_5y",
-                "player_tier_5y",
-                "overall_pick",
-                "pos_group",
+                "draft_player_name", "draft_year", "drafted_team", "is_training_cohort",
+                "vorp_5y", "reached_min_threshold_5y", "player_tier_5y", "overall_pick", "pos_group",
             ]
             feat_cols = [
                 c for c in features_df.columns
                 if c not in ignore_cols and pd.api.types.is_numeric_dtype(features_df[c])
             ]
 
-            # Filter historical training cohort for comparisons
             hist_df = features_df[
                 (features_df["is_training_cohort"] == True)
                 & (features_df["draft_player_name"] != selected_player)
@@ -375,19 +369,19 @@ elif page == "Player Card":
                     },
                 )
 
-    if selected_player:
-        player_year = int(player_row.get("draft_year", 0))
-        safe_name = sanitize_filename(selected_player)
-        
-        shap_image_path = f"data/shap_plots/{player_year}/{safe_name}.png"
-        
-        st.markdown("---")
-        st.subheader("🔍 Model Drivers (SHAP Plot)")
-        
-        if os.path.exists(shap_image_path):
-            st.image(shap_image_path, use_container_width=True)
-        else:
-            st.info(f"No pre-rendered SHAP plot found for {selected_player}.")
+        if selected_player:
+            player_year = int(player_row.get("draft_year", 0))
+            safe_name = sanitize_filename(selected_player)
+            
+            shap_image_path = f"data/shap_plots/{player_year}/{safe_name}.png"
+            
+            st.markdown("---")
+            st.subheader("🔍 Model Drivers (SHAP Plot)")
+            
+            if os.path.exists(shap_image_path):
+                st.image(shap_image_path, use_container_width=True)
+            else:
+                st.info(f"No pre-rendered SHAP plot found for {selected_player}.")
     
 
 # ==========================================
@@ -499,40 +493,77 @@ elif page == "Model vs. Draft":
 # PAGE 4: BACKTEST
 # ==========================================
 elif page == "Backtest":
-    st.title("Historical Model Backtest (2009-2019)")
+    st.title("Historical Model Backtest (2008-2019)")
     st.markdown(
-        "Out-of-fold validation and test performance evaluating the model's ranking ability against historical baseline draft order."
+        "Out-of-fold cross-validation performance evaluating the model's ranking ability against historical baseline draft order."
     )
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("2019 Test Hit Rate (Top 10 in 30)", "80.0%", delta="Baseline: 50.0%")
-    m2.metric("2019 Test NDCG@10", "0.573", delta="+0.09 vs Draft")
-    m3.metric("2019 Test NDCG@30", "0.709", delta="+0.06 vs Draft")
-    m4.metric("Validation Spearman Rho", "0.314", delta="Stable")
+    import json
+    metrics_path = "models/metrics.json"
+    
+    if not os.path.exists(metrics_path):
+        st.warning("Metrics file not found. Run `train.py` to generate backtest scores.")
+    else:
+        with open(metrics_path, "r") as f:
+            metrics = json.load(f)
+            
+        # Safely extract metrics (default to 0 if missing)
+        rho = metrics.get("spearman_rho", 0)
+        ndcg10 = metrics.get("ndcg_10", 0)
+        ndcg30 = metrics.get("ndcg_30", 0)
+        hit_rate = metrics.get("hit_rate", 0)
+        
+        # Draft baseline metrics
+        draft_rho = metrics.get("draft_spearman_rho", 0)
+        draft_ndcg10 = metrics.get("draft_ndcg_10", 0)
+        draft_ndcg30 = metrics.get("draft_ndcg_30", 0)
+        draft_hit_rate = metrics.get("draft_hit_rate", 0)
 
-    st.markdown("---")
-    st.subheader("Cohort Metrics Summary")
+        # Calculate deltas (Model - Draft Order)
+        delta_rho = rho - draft_rho
+        delta_ndcg10 = ndcg10 - draft_ndcg10
+        delta_ndcg30 = ndcg30 - draft_ndcg30
+        delta_hit_rate = hit_rate - draft_hit_rate
 
-    backtest_data = pd.DataFrame(
-        [
-            {
-                "Cohort": "Validation (2017-2018)",
-                "Spearman Rho": 0.314,
-                "NDCG@10": 0.476,
-                "NDCG@30": 0.609,
-                "Hit Rate Top 10": "70.0%",
-            },
-            {
-                "Cohort": "Test Set (2019)",
-                "Spearman Rho": 0.317,
-                "NDCG@10": 0.573,
-                "NDCG@30": 0.709,
-                "Hit Rate Top 10": "80.0%",
-            },
-        ]
-    )
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("OOF Hit Rate (Top 10 in 30)", f"{hit_rate * 100:.1f}%", delta=f"{delta_hit_rate * 100:.1f}% vs Draft")
+        m2.metric("OOF NDCG@10", f"{ndcg10:.3f}", delta=f"{delta_ndcg10:+.3f} vs Draft")
+        m3.metric("OOF NDCG@30", f"{ndcg30:.3f}", delta=f"{delta_ndcg30:+.3f} vs Draft")
+        m4.metric("OOF Spearman Rho", f"{rho:.3f}", delta=f"{delta_rho:+.3f} vs Draft")
 
-    st.dataframe(backtest_data, use_container_width=True, hide_index=True)
+        st.markdown("---")
+        st.subheader("Performance Summary vs. Actual Draft Order")
+
+        backtest_data = pd.DataFrame(
+            [
+                {
+                    "Metric": "Spearman Rho (Rank Correlation)",
+                    "Model Score": f"{rho:.3f}",
+                    "Draft Order Baseline": f"{draft_rho:.3f}",
+                    "Advantage": f"{delta_rho:+.3f}",
+                },
+                {
+                    "Metric": "NDCG@10 (Top 10 Accuracy)",
+                    "Model Score": f"{ndcg10:.3f}",
+                    "Draft Order Baseline": f"{draft_ndcg10:.3f}",
+                    "Advantage": f"{delta_ndcg10:+.3f}",
+                },
+                {
+                    "Metric": "NDCG@30 (First Round Accuracy)",
+                    "Model Score": f"{ndcg30:.3f}",
+                    "Draft Order Baseline": f"{draft_ndcg30:.3f}",
+                    "Advantage": f"{delta_ndcg30:+.3f}",
+                },
+                {
+                    "Metric": "Top 10 Hit Rate (Found in Top 30)",
+                    "Model Score": f"{hit_rate * 100:.1f}%",
+                    "Draft Order Baseline": f"{draft_hit_rate * 100:.1f}%",
+                    "Advantage": f"{delta_hit_rate * 100:+.1f}%",
+                },
+            ]
+        )
+
+        st.dataframe(backtest_data, use_container_width=True, hide_index=True)
 
 
 # ==========================================
@@ -543,19 +574,48 @@ elif page == "About":
 
     st.markdown(
         """
-        ### Methodology
-        This NBA Draft Projection System generates 5-Year VORP (Value Over Replacement Player) forecasts 
-        and calibrated rotation probabilities for prospects using strictly **pre-draft** inputs.
+        ### System Overview
+        This NBA Draft Intelligence System evaluates NCAA prospects by isolating fundamental basketball skills from pace, scheme, and sample-size noise. It uses a dual-pipeline approach to independently project a player's **ceiling** (Value Over Replacement Player) and **floor** (Rotation Probability) using purely pre-draft inputs.
 
-        #### Key Modeling Components:
-        1. **70/30 Hybrid Ensemble:** Blends gradient boosted trees (LightGBM) with regularized linear regression (Ridge) to balance non-linear interaction learning with baseline stability.
-        2. **Calibrated Floor Model:** Employs standardized Logistic Regression with Platt Scaling to calculate true rotation probability floor percentages.
-        3. **Height-Gated Physical Scaling:** Applies non-linear continuous interaction scaling to physical metrics (`ape_index`) for undersized prospects to manage position penalties naturally.
-        4. **Target Variable:** 5-Year Cumulative NBA VORP constructed with strict thresholding to eliminate career-length skew.
+        ---
+
+        ### 1. Data Ingestion & Hygiene
+        The foundation of the model relies on three disparate data sources joined and processed via Databricks Unity Catalog:
+        * **Production:** NCAA box score statistics and advanced metrics sourced from Bart Torvik.
+        * **Anthropometrics:** Official NBA Draft Combine measurements (Height, Wingspan, Standing Reach, Body Fat %).
+        * **Outcomes (The Target):** Career VORP and Minutes Played via Basketball-Reference, capped at a strict 5-year window to prevent older veterans from skewing the target variable.
+        * **Exclusions:** To maintain a clean feature space, prospects lacking NCAA data (e.g., International, Overtime Elite, G-League Ignite) are explicitly filtered out prior to training.
+
+        ### 2. Feature Engineering
+        Raw box score numbers are heavily transformed to maximize predictive signal and stabilize variance:
+        * **Pace Normalization:** All counting stats (Points, Rebounds, Assists) are converted to a standardized **Per-100 Possessions** baseline (~1.70 possessions/minute) to evaluate slow-paced bigs and run-and-gun guards on equal footing.
+        * **Composite Efficiency Metrics:** Linear stats are replaced with composite vectors like `usage_efficiency_index` (Usage % × True Shooting %) to reward high-volume scorers who maintain efficiency.
+        * **Empirical Bayes Shrinkage:** Low-volume shooting metrics (3P% and FT%) are shrunk toward the mean to prevent small sample sizes from tricking the model.
+        * **Positional Z-Scores & Overrides:** Players are algorithmically bucketed into Guard, Wing, or Big based on combine heights, with production evaluated relative to their peers (`bpm_pos_zscore`). Known outliers (e.g., tall playmakers like Tyrese Haliburton or Cade Cunningham) are managed via a localized CSV override dictionary.
+
+        ### 3. Model Architecture
+        The pipeline avoids relying on a single "black box" by treating ceiling and floor as separate machine learning problems:
+
+        **The Ceiling Model (Projected 5Y VORP)**
+        * **Algorithm:** A 70/30 Ensemble of LightGBM (Gradient Boosted Trees) and Ridge Regression. 
+        * **Why:** LightGBM excels at discovering non-linear interactions (e.g., high assist rates scaling exponentially with height). The Ridge Regression anchor (Alpha = 20.0) forces the ensemble to respect fundamental linear baselines, preventing the trees from overfitting to obscure outlier combinations.
+        * **Validation:** GroupKFold cross-validation by `draft_year` prevents the model from peeking at future outcomes.
+
+        **The Floor Model (Rotation Probability)**
+        * **Algorithm:** Standardized Logistic Regression wrapped in a Platt Scaling Calibrator.
+        * **Why:** The rotation model answers a binary question: *Will this prospect survive 2,000 NBA minutes?* Linear models naturally apply harsh penalties to high-risk profiles (e.g., older prospects or severely undersized guards). The calibration ensures the output percentage (e.g., 40%) strictly matches the real-world statistical probability.
+
+        ### 4. Interpretation & UI
+        * **Similarity Matching:** A standard scaler and Cosine Similarity matrix are applied to the feature vector space to find the 5 closest historical statistical matches from the 2009-2019 training block.
+        * **Feature Attribution:** SHAP (SHapley Additive exPlanations) TreeExplainer values are pre-rendered during the pipeline run to visually explain exactly how the LightGBM model weighed a prospect's features to arrive at their VORP projection.
+
+        ---
+
+        ### 5. Challenges & Future Roadmap
+        While the current architecture provides a robust historical baseline, several enhancements are planned for future iterations:
         
-        #### Data Pipeline & Infrastructure:
-        * **Storage & Warehouse:** Databricks Unity Catalog (`nba_draft.analytics`)
-        * **Tracking:** Managed MLflow for hyperparameter & metric experiment tracking
-        * **Storage Artifacts:** Local Parquet caching for optimized frontend instance performance
+        * **Algorithmic Positional Flagging:** Currently, positional anomalies (like jumbo playmakers) are flagged using rigid height and assist thresholds. The next step is to implement unsupervised clustering (e.g., K-Means or PCA) to classify players into fluid offensive archetypes (e.g., "Primary Initiator," "Slashing Wing," "Stretch Big") based purely on their statistical footprint rather than combine height.
+        * **Live In-Season Updates:** The current pipeline relies on static, end-of-season data dumps. By integrating automated scheduling tools (like Airflow or GitHub Actions) with live NCAA data feeds, the model will dynamically update and project prospects in real-time throughout the college basketball season.
+        * **International & Non-NCAA Integration:** Prospects from the EuroLeague, NBL, and developmental leagues (G-League Ignite, Overtime Elite) are currently excluded due to structural data differences. Future versions will introduce a League Equivalency Translation layer (similar to NHLE in hockey) to normalize international stats and pace, allowing the model to accurately project global talents alongside NCAA athletes.
         """
     )

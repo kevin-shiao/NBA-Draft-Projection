@@ -10,6 +10,8 @@ from scipy.stats import spearmanr
 import mlflow
 import mlflow.lightgbm
 from dotenv import load_dotenv
+import json
+os.makedirs("models", exist_ok=True)
 
 # Load Environment Variables
 load_dotenv()
@@ -199,6 +201,11 @@ def run_training_pipeline():
     overall_picks_val = train_df["overall_pick"].values if "overall_pick" in train_df.columns else None
     eval_metrics = compute_ranking_metrics(y_train_full, oof_preds, train_df["draft_year"].values, overall_picks_val)
 
+    metrics_export_path = "models/metrics.json"
+    with open(metrics_export_path, "w") as f:
+        json.dump(eval_metrics, f, indent=4)
+    print(f"  -> [SUCCESS] Exported backtest metrics to '{metrics_export_path}'")
+    
     print("\n==========================================")
     print(" MODEL PERFORMANCE VS DRAFT ORDER BASELINE")
     print("==========================================")
