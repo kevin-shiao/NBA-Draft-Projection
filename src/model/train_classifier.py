@@ -52,7 +52,7 @@ def train_calibrated_classifier():
     y_train_full = train_df["reached_min_threshold_5y"].astype(int)
     groups = train_df["draft_year"]
 
-   # --- NEW: GRID SEARCH FOR OPTIMAL C ---
+   # Grid Search for Optimal C
     print("--- TUNING LOGISTIC REGRESSION HYPERPARAMETERS ---")
     temp_clf = make_pipeline(
         StandardScaler(),
@@ -65,7 +65,6 @@ def train_calibrated_classifier():
     grid = GridSearchCV(
         estimator=temp_clf,
         param_grid=param_grid,
-        # WRAP THE GENERATOR IN list() SO IT CAN BE PICKLED ACROSS CORES
         cv=list(gkf.split(X_train_full, y_train_full, groups=groups)),
         scoring='roc_auc',
         n_jobs=-1

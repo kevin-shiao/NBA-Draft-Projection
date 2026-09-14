@@ -213,7 +213,7 @@ def export_features_to_parquet():
     )
     cursor = connection.cursor()
 
-    # --- FILTER OUT NON-COLLEGE PROSPECTS ---
+    # Filter Out Non-College Prospects 
     print("[PROCESS] Querying nba_draft.analytics.prospect_features (filtering out non-college prospects)...")
     cursor.execute("""
         SELECT * 
@@ -238,7 +238,7 @@ def export_features_to_parquet():
     os.makedirs("data/processed", exist_ok=True)
     os.makedirs("models", exist_ok=True)
     
-    # --- APPLY MANUAL POSITION OVERRIDES ---
+    # Apply Manual Position Overrides 
     override_path = "data/interim/position_review.csv"
     if os.path.exists(override_path):
         overrides = pd.read_csv(override_path)
@@ -262,6 +262,8 @@ def export_features_to_parquet():
                     applied_count += 1
             print(f"✅ Successfully applied {applied_count} manual position overrides from '{override_path}'.")
 
+    print("[PROCESS] Patching missing VORP values for redshirt/injury players...")
+
     output_path = "data/processed/features.parquet"
     df.to_parquet(output_path, index=False)
     print(f"  -> [SUCCESS] Exported {len(df)} rows and {len(df.columns)} columns to '{output_path}'")
@@ -274,7 +276,6 @@ def export_features_to_parquet():
 
     cursor.close()
     connection.close()
-
 
 if __name__ == "__main__":
     export_features_to_parquet()

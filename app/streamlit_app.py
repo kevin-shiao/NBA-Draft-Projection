@@ -11,7 +11,7 @@ from sklearn.preprocessing import StandardScaler
 
 # Page Configuration
 st.set_page_config(
-    page_title="NBA Draft Intelligence System",
+    page_title="NBA Draft Intelligence Model",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -84,7 +84,7 @@ if page == "Big Board":
 
     if predictions_df.empty:
         st.error(
-            "Predictions dataset not found. Please run `export_features.py` and `train.py` first."
+            "Predictions dataset not found. Please run `export_features.py`, `train.py`, and `train_classifier.py` first."
         )
     else:
         available_years = sorted(
@@ -121,11 +121,13 @@ if page == "Big Board":
         df_class["Tier"] = df_class["pred_vorp_5y"].apply(assign_tier)
         df_class["Model Rank"] = df_class["model_rank"].astype(int)
 
-        # Format rotation_prob as 0-100 percentage if present
+        # Format rotation_prob as 0-100 percentage if present from train_classifier
         if "rotation_prob" in df_class.columns:
             df_class["Rotation Prob %"] = df_class["rotation_prob"].apply(
                 lambda x: x * 100 if pd.notna(x) and x <= 1.0 else x
             )
+        else:
+            df_class["Rotation Prob %"] = np.nan
 
         # Columns Display Config
         display_cols = [
@@ -376,10 +378,12 @@ elif page == "Player Card":
             shap_image_path = f"data/shap_plots/{player_year}/{safe_name}.png"
             
             st.markdown("---")
-            st.subheader("🔍 Model Drivers (SHAP Plot)")
+            st.subheader("Model Drivers (SHAP Plot)")
             
             if os.path.exists(shap_image_path):
-                st.image(shap_image_path, use_container_width=True)
+                col_left, col_center, col_right = st.columns([1, 2, 1])
+                with col_center:
+                    st.image(shap_image_path, use_container_width=True)
             else:
                 st.info(f"No pre-rendered SHAP plot found for {selected_player}.")
     
@@ -396,10 +400,30 @@ elif page == "Model vs. Draft":
     if predictions_df.empty:
         st.error("Predictions dataset not found.")
     else:
+        # Added Filtering Logic
+        available_years = ["All"] + sorted(
+            predictions_df["draft_year"].dropna().unique().astype(int),
+            reverse=True,
+        )
+        available_positions = ["All"] + sorted(
+            predictions_df["pos_group"].dropna().unique()
+        )
+
+        col1, col2 = st.columns(2)
+        with col1:
+            selected_year = st.selectbox("Filter Draft Class", available_years, index=0)
+        with col2:
+            selected_pos = st.selectbox("Filter Position", available_positions, index=0)
+
         df_eval = predictions_df[
             predictions_df["overall_pick"].notna()
             & (predictions_df["overall_pick"] > 0)
         ].copy()
+
+        if selected_year != "All":
+            df_eval = df_eval[df_eval["draft_year"] == selected_year]
+        if selected_pos != "All":
+            df_eval = df_eval[df_eval["pos_group"] == selected_pos]
 
         df_eval["draft_disagreement"] = (
             df_eval["overall_pick"] - df_eval["model_rank"]
@@ -526,10 +550,10 @@ elif page == "Backtest":
         delta_hit_rate = hit_rate - draft_hit_rate
 
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("OOF Hit Rate (Top 10 in 30)", f"{hit_rate * 100:.1f}%", delta=f"{delta_hit_rate * 100:.1f}% vs Draft")
-        m2.metric("OOF NDCG@10", f"{ndcg10:.3f}", delta=f"{delta_ndcg10:+.3f} vs Draft")
-        m3.metric("OOF NDCG@30", f"{ndcg30:.3f}", delta=f"{delta_ndcg30:+.3f} vs Draft")
-        m4.metric("OOF Spearman Rho", f"{rho:.3f}", delta=f"{delta_rho:+.3f} vs Draft")
+        m1.metric("Hit Rate (Top 10 in 30)", f"{hit_rate * 100:.1f}%", delta=f"{delta_hit_rate * 100:.1f}% vs Draft")
+        m2.metric("NDCG@10", f"{ndcg10:.3f}", delta=f"{delta_ndcg10:+.3f} vs Draft")
+        m3.metric("NDCG@30", f"{ndcg30:.3f}", delta=f"{delta_ndcg30:+.3f} vs Draft")
+        m4.metric("Spearman Rho", f"{rho:.3f}", delta=f"{delta_rho:+.3f} vs Draft")
 
         st.markdown("---")
         st.subheader("Performance Summary vs. Actual Draft Order")
@@ -566,16 +590,27 @@ elif page == "Backtest":
         st.dataframe(backtest_data, use_container_width=True, hide_index=True)
 
         st.markdown("---")
-        st.subheader("📚 Metrics Glossary")
-        st.markdown(
-            """
-            * **Spearman Rho (Rank Correlation):** Evaluates how well the model's overall player rankings mirror reality, ignoring absolute VORP predictions. A score of 1.0 means perfect ranking; 0.0 means completely random.
-            * **NDCG (Normalized Discounted Cumulative Gain):** A search-engine metric adapted for the draft. It heavily penalizes misses at the very top of the board. 
-                * **NDCG@10:** Measures accuracy strictly within the top 10 picks. Whiffing on the #2 overall player hurts the score significantly more than whiffing on the #9 player.
-                * **NDCG@30:** Applies the same sliding-scale penalty logic across the entire first round.
-            * **Top 10 Hit Rate (Found in Top 30):** A straightforward hit-or-miss metric. Out of the 10 most productive NBA players in reality, how many did the model successfully project *somewhere* within its first-round board (top 30)? 
-            """
-        )
+        col_curve, col_gloss = st.columns([1, 1])
+
+        with col_curve:
+            st.subheader("Floor Model Calibration Curve")
+            cal_curve_path = "visualizations/calibration_curve.png"
+            if os.path.exists(cal_curve_path):
+                st.image(cal_curve_path, use_container_width=True, caption="Isotonic Rotation Probability Calibration")
+            else:
+                st.info("Run `train_classifier.py` to generate the calibration curve.")
+
+        with col_gloss:
+            st.subheader("Metrics Glossary")
+            st.markdown(
+                """
+                * **Spearman Rho (Rank Correlation):** Evaluates how well the model's overall player rankings mirror reality, ignoring absolute VORP predictions. A score of 1.0 means perfect ranking; 0.0 means completely random.
+                * **NDCG (Normalized Discounted Cumulative Gain):** A search-engine metric adapted for the draft. It heavily penalizes misses at the very top of the board. 
+                    * **NDCG@10:** Measures accuracy strictly within the top 10 picks. Whiffing on the #2 overall player hurts the score significantly more than whiffing on the #9 player.
+                    * **NDCG@30:** Applies the same sliding-scale penalty logic across the entire first round.
+                * **Top 10 Hit Rate (Found in Top 30):** A straightforward hit-or-miss metric. Out of the 10 most productive NBA players in reality, how many did the model successfully project *somewhere* within its first-round board (top 30)? 
+                """
+            )
 
 
 # ==========================================
@@ -587,11 +622,11 @@ elif page == "About":
     st.markdown(
         """
         ### System Overview
-        This NBA Draft Intelligence System evaluates NCAA prospects by isolating fundamental basketball skills from pace, scheme, and sample-size noise. It uses a dual-pipeline approach to independently project a player's **ceiling** (Value Over Replacement Player) and **floor** (Rotation Probability) using purely pre-draft inputs.
+        This NBA Draft Intelligence Model evaluates NCAA prospects by isolating fundamental basketball skills from pace, scheme, and sample-size noise. It uses a dual-pipeline approach to independently project a player's **ceiling** (Value Over Replacement Player) and **floor** (Rotation Probability) using purely pre-draft inputs.
 
         ---
 
-        ### 1. Data Ingestion & Hygiene
+        ### 1. Data Ingestion & Cleaning
         The foundation of the model relies on three disparate data sources joined and processed via Databricks Unity Catalog:
         * **Production:** NCAA box score statistics and advanced metrics sourced from Bart Torvik.
         * **Anthropometrics:** Official NBA Draft Combine measurements (Height, Wingspan, Standing Reach, Body Fat %).
@@ -603,19 +638,20 @@ elif page == "About":
         * **Pace Normalization:** All counting stats (Points, Rebounds, Assists) are converted to a standardized **Per-100 Possessions** baseline (~1.70 possessions/minute) to evaluate slow-paced bigs and run-and-gun guards on equal footing.
         * **Composite Efficiency Metrics:** Linear stats are replaced with composite vectors like `usage_efficiency_index` (Usage % × True Shooting %) to reward high-volume scorers who maintain efficiency.
         * **Empirical Bayes Shrinkage:** Low-volume shooting metrics (3P% and FT%) are shrunk toward the mean to prevent small sample sizes from tricking the model.
-        * **Positional Z-Scores & Overrides:** Players are algorithmically bucketed into Guard, Wing, or Big based on combine heights, with production evaluated relative to their peers (`bpm_pos_zscore`). Known outliers (e.g., tall playmakers like Tyrese Haliburton or Cade Cunningham) are managed via a localized CSV override dictionary.
+        * **Positional Z-Scores & Overrides:** Players are algorithmically bucketed into Guard, Wing, or Big based on combine heights, with production evaluated relative to their peers (`bpm_pos_zscore`). Known outliers (e.g., tall playmakers like Cade Cunningham) are managed via a localized CSV override dictionary.
 
         ### 3. Model Architecture
         The pipeline avoids relying on a single "black box" by treating ceiling and floor as separate machine learning problems:
 
         **The Ceiling Model (Projected 5Y VORP)**
-        * **Algorithm:** A 70/30 Ensemble of LightGBM (Gradient Boosted Trees) and Ridge Regression. 
-        * **Why:** LightGBM excels at discovering non-linear interactions (e.g., high assist rates scaling exponentially with height). The Ridge Regression anchor (Alpha = 20.0) forces the ensemble to respect fundamental linear baselines, preventing the trees from overfitting to obscure outlier combinations.
+        * **Algorithm:** An optimized Ensemble of LightGBM (Gradient Boosted Trees) and Ridge Regression, dynamically loaded from Databricks.
+        * **Hyperparameter Tuning:** Optuna Bayesian optimization balances the ensemble weights (currently ~57% LightGBM / 43% Ridge) to maximize NDCG@30. 
+        * **Monotonic Constraints:** Explicit constraints are applied to `age_at_draft` during training to mathematically handicap the "college legend" trap, ensuring older upperclassmen aren't artificially boosted over raw 19-year-old prospects.
         * **Validation:** GroupKFold cross-validation by `draft_year` prevents the model from peeking at future outcomes.
 
         **The Floor Model (Rotation Probability)**
-        * **Algorithm:** Standardized Logistic Regression wrapped in a Platt Scaling Calibrator.
-        * **Why:** The rotation model answers a binary question: *Will this prospect survive 2,000 NBA minutes?* Linear models naturally apply harsh penalties to high-risk profiles (e.g., older prospects or severely undersized guards). The calibration ensures the output percentage (e.g., 40%) strictly matches the real-world statistical probability.
+        * **Algorithm:** Standardized Logistic Regression wrapped in an Isotonic Regression Calibrator.
+        * **Why:** The rotation model answers a binary question: *Will this prospect survive 2,000 NBA minutes?* The logistic regression leverages GridSearch to find the optimal L2 penalty across a curated subset of 14 high-signal metrics. Isotonic calibration is then applied to explicitly map the model outputs to real-world statistical probabilities, removing high-end overconfidence.
 
         ### 4. Interpretation & UI
         * **Similarity Matching:** A standard scaler and Cosine Similarity matrix are applied to the feature vector space to find the 5 closest historical statistical matches from the 2009-2019 training block.

@@ -35,12 +35,12 @@ def build_prospect_features():
     college_dedup AS (
         SELECT *,
             REGEXP_REPLACE(
-                REGEXP_REPLACE(LOWER(col_0), '\\\\b(jr|sr|ii|iii|iv)\\\\b', ''), 
+                REGEXP_REPLACE(LOWER(TRIM(col_0)), '\\\\b(jr|sr|ii|iii|iv)\\\\b', ''), 
                 '[^a-z0-9]', ''
             ) AS norm_college_name,
             ROW_NUMBER() OVER (
                 PARTITION BY REGEXP_REPLACE(
-                    REGEXP_REPLACE(LOWER(col_0), '\\\\b(jr|sr|ii|iii|iv)\\\\b', ''), 
+                    REGEXP_REPLACE(LOWER(TRIM(col_0)), '\\\\b(jr|sr|ii|iii|iv)\\\\b', ''), 
                     '[^a-z0-9]', ''
                 ), season 
                 ORDER BY CAST(col_3 AS INT) DESC
@@ -85,7 +85,7 @@ def build_prospect_features():
             CAST(c.col_3 AS INT) AS games_played_val, 
             c.col_2 AS conf, 
             c.col_66 AS birthdate_str,
-            c.col_26 AS height_str,                   -- col_26 = Listed Height string (e.g. '7-0', '6-11')
+            c.col_26 AS height_str, 
             c.true_bpm AS college_bpm,
             c.total_seasons,
             COALESCE(c.true_bpm - c.prev_bpm, 0.0) AS bpm_delta,
@@ -99,7 +99,7 @@ def build_prospect_features():
         FROM target_base t
         LEFT JOIN college_history c
             ON REGEXP_REPLACE(
-                REGEXP_REPLACE(LOWER(t.draft_player_name), '\\\\b(jr|sr|ii|iii|iv)\\\\b', ''), 
+                REGEXP_REPLACE(LOWER(TRIM(COALESCE(t.college_player_name, t.draft_player_name))), '\\\\b(jr|sr|ii|iii|iv)\\\\b', ''), 
                 '[^a-z0-9]', ''
             ) = c.norm_college_name
            AND c.season_int <= t.draft_year
@@ -108,12 +108,12 @@ def build_prospect_features():
     combine_dedup AS (
         SELECT *,
             REGEXP_REPLACE(
-                REGEXP_REPLACE(LOWER(player_name), '\\\\b(jr|sr|ii|iii|iv)\\\\b', ''), 
+                REGEXP_REPLACE(LOWER(TRIM(player_name)), '\\\\b(jr|sr|ii|iii|iv)\\\\b', ''), 
                 '[^a-z0-9]', ''
             ) AS norm_combine_name,
             ROW_NUMBER() OVER (
                 PARTITION BY REGEXP_REPLACE(
-                    REGEXP_REPLACE(LOWER(player_name), '\\\\b(jr|sr|ii|iii|iv)\\\\b', ''), 
+                    REGEXP_REPLACE(LOWER(TRIM(player_name)), '\\\\b(jr|sr|ii|iii|iv)\\\\b', ''), 
                     '[^a-z0-9]', ''
                 ) 
                 ORDER BY season DESC
@@ -172,7 +172,7 @@ def build_prospect_features():
         FROM final_college c
         LEFT JOIN combine_dedup cb
             ON REGEXP_REPLACE(
-                REGEXP_REPLACE(LOWER(c.draft_player_name), '\\\\b(jr|sr|ii|iii|iv)\\\\b', ''), 
+                REGEXP_REPLACE(LOWER(TRIM(c.draft_player_name)), '\\\\b(jr|sr|ii|iii|iv)\\\\b', ''), 
                 '[^a-z0-9]', ''
             ) = cb.norm_combine_name
            AND cb.cb_rn = 1

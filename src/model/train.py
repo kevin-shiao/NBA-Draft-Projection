@@ -171,7 +171,6 @@ def run_training_pipeline():
         ridge_weight = 0.30
         print("  [CONFIG] 'models/best_params.json' not found. Using default parameters.")
 
-    # --- NEW: APPLY MONOTONIC CONSTRAINTS FOR AGE ---
     # This ensures older players are never artificially boosted over younger players
     constraints = []
     for col in feature_cols:

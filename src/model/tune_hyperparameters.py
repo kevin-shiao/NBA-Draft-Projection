@@ -38,7 +38,6 @@ def objective(trial):
         "subsample": trial.suggest_float("subsample", 0.5, 0.9),
     }
 
-    # --- NEW: APPLY MONOTONIC CONSTRAINTS FOR AGE ---
     constraints = []
     for col in feature_cols:
         if col == "age_at_draft":
@@ -48,7 +47,6 @@ def objective(trial):
 
     lgb_params["monotone_constraints"] = tuple(constraints)
     lgb_params["monotone_constraints_method"] = "advanced"
-    # ------------------------------------------------
 
     # 2. Suggest Ridge & Ensemble Weights
     ridge_alpha = trial.suggest_float("ridge_alpha", 5.0, 50.0)
