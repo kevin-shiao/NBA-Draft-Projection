@@ -15,7 +15,8 @@ def objective(trial):
     ignore_cols = [
         "draft_player_name", "draft_year", "drafted_team", "is_training_cohort",
         "vorp_5y", "reached_min_threshold_5y", "player_tier_5y", "overall_pick",
-        "pos_group", "pos_bucket", "season", "mp_5y", "seasons_played_5y"
+        "pos_group", "pos_bucket", "season", "mp_5y", "seasons_played_5y","pts_per_40",
+        "reb_per_40", "ast_per_40", "stl_per_40", "blk_per_40"
     ]
     target_col = "vorp_5y"
     feature_cols = [c for c in df.columns if c not in ignore_cols and pd.api.types.is_numeric_dtype(df[c])]

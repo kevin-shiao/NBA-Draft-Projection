@@ -130,6 +130,11 @@ def run_training_pipeline():
         "season",
         "mp_5y",
         "seasons_played_5y",
+        "pts_per_40",
+        "reb_per_40",
+        "ast_per_40",
+        "stl_per_40",
+        "blk_per_40"
     ]
 
     target_col = "vorp_5y"
