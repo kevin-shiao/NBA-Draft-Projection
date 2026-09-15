@@ -5,16 +5,17 @@ from databricks import sql
 
 load_dotenv()
 
+
 def build_prospect_features():
     print("Connecting to Databricks...")
     connection = sql.connect(
         server_hostname=os.getenv("DATABRICKS_SERVER_HOSTNAME"),
         http_path=os.getenv("DATABRICKS_HTTP_PATH"),
-        access_token=os.getenv("DATABRICKS_TOKEN")
+        access_token=os.getenv("DATABRICKS_TOKEN"),
     )
     cursor = connection.cursor()
 
-    print("[PROCESS] Building clean analytics.prospect_features with college height fallbacks...")
+    print("[PROCESS] Building clean analytics.prospect_features with All-Games BPM (col_53) & Per-100 metrics...")
 
     feature_table_sql = """
     CREATE OR REPLACE TABLE nba_draft.analytics.prospect_features AS
@@ -35,12 +36,12 @@ def build_prospect_features():
     college_dedup AS (
         SELECT *,
             REGEXP_REPLACE(
-                REGEXP_REPLACE(LOWER(TRIM(col_0)), '\\\\b(jr|sr|ii|iii|iv)\\\\b', ''), 
+                REGEXP_REPLACE(LOWER(TRIM(col_0)), '\\b(jr|sr|ii|iii|iv)\\b', ''), 
                 '[^a-z0-9]', ''
             ) AS norm_college_name,
             ROW_NUMBER() OVER (
                 PARTITION BY REGEXP_REPLACE(
-                    REGEXP_REPLACE(LOWER(TRIM(col_0)), '\\\\b(jr|sr|ii|iii|iv)\\\\b', ''), 
+                    REGEXP_REPLACE(LOWER(TRIM(col_0)), '\\b(jr|sr|ii|iii|iv)\\b', ''), 
                     '[^a-z0-9]', ''
                 ), season 
                 ORDER BY CAST(col_3 AS INT) DESC
@@ -52,9 +53,10 @@ def build_prospect_features():
         SELECT 
             c.*,
             CAST(c.season AS INT) AS season_int,
-            CAST(c.col_50 AS DOUBLE) AS true_bpm,
+            -- FIX: Pointing to col_53 for All-Games BPM instead of col_50 (Conference-Only)
+            CAST(c.col_53 AS DOUBLE) AS true_bpm,
             COUNT(*) OVER (PARTITION BY c.norm_college_name) AS total_seasons,
-            LAG(CAST(c.col_50 AS DOUBLE)) OVER (
+            LAG(CAST(c.col_53 AS DOUBLE)) OVER (
                 PARTITION BY c.norm_college_name ORDER BY CAST(c.season AS INT) ASC
             ) AS prev_bpm
         FROM college_dedup c
@@ -99,7 +101,7 @@ def build_prospect_features():
         FROM target_base t
         LEFT JOIN college_history c
             ON REGEXP_REPLACE(
-                REGEXP_REPLACE(LOWER(TRIM(COALESCE(t.college_player_name, t.draft_player_name))), '\\\\b(jr|sr|ii|iii|iv)\\\\b', ''), 
+                REGEXP_REPLACE(LOWER(TRIM(COALESCE(t.college_player_name, t.draft_player_name))), '\\b(jr|sr|ii|iii|iv)\\b', ''), 
                 '[^a-z0-9]', ''
             ) = c.norm_college_name
            AND c.season_int <= t.draft_year
@@ -108,12 +110,12 @@ def build_prospect_features():
     combine_dedup AS (
         SELECT *,
             REGEXP_REPLACE(
-                REGEXP_REPLACE(LOWER(TRIM(player_name)), '\\\\b(jr|sr|ii|iii|iv)\\\\b', ''), 
+                REGEXP_REPLACE(LOWER(TRIM(player_name)), '\\b(jr|sr|ii|iii|iv)\\b', ''), 
                 '[^a-z0-9]', ''
             ) AS norm_combine_name,
             ROW_NUMBER() OVER (
                 PARTITION BY REGEXP_REPLACE(
-                    REGEXP_REPLACE(LOWER(TRIM(player_name)), '\\\\b(jr|sr|ii|iii|iv)\\\\b', ''), 
+                    REGEXP_REPLACE(LOWER(TRIM(player_name)), '\\b(jr|sr|ii|iii|iv)\\b', ''), 
                     '[^a-z0-9]', ''
                 ) 
                 ORDER BY season DESC
@@ -124,12 +126,20 @@ def build_prospect_features():
     raw_joined AS (
         SELECT 
             c.*,
+            -- Per 40 Minute Metrics
             (c.pts_per_game / NULLIF(c.mp_per_game, 0.0)) * 40.0 AS pts_per_40,
             (c.reb_per_game / NULLIF(c.mp_per_game, 0.0)) * 40.0 AS reb_per_40,
             (c.ast_per_game / NULLIF(c.mp_per_game, 0.0)) * 40.0 AS ast_per_40,
             (c.stl_per_game / NULLIF(c.mp_per_game, 0.0)) * 40.0 AS stl_per_40,
             (c.blk_per_game / NULLIF(c.mp_per_game, 0.0)) * 40.0 AS blk_per_40,
             
+            -- Per 100 Possession Metrics (Pace Adjusted @ 68.5 Possessions / 40 Min)
+            ((c.pts_per_game / NULLIF(c.mp_per_game, 0.0)) * 40.0) * (100.0 / 68.5) AS pts_per_100,
+            ((c.reb_per_game / NULLIF(c.mp_per_game, 0.0)) * 40.0) * (100.0 / 68.5) AS reb_per_100,
+            ((c.ast_per_game / NULLIF(c.mp_per_game, 0.0)) * 40.0) * (100.0 / 68.5) AS ast_per_100,
+            ((c.stl_per_game / NULLIF(c.mp_per_game, 0.0)) * 40.0) * (100.0 / 68.5) AS stl_per_100,
+            ((c.blk_per_game / NULLIF(c.mp_per_game, 0.0)) * 40.0) * (100.0 / 68.5) AS blk_per_100,
+
             c.ts_pct_val AS ts_pct,
             c.efg_pct_val AS efg_pct,
             c.ft_pct_val AS ft_pct,
@@ -172,7 +182,7 @@ def build_prospect_features():
         FROM final_college c
         LEFT JOIN combine_dedup cb
             ON REGEXP_REPLACE(
-                REGEXP_REPLACE(LOWER(TRIM(c.draft_player_name)), '\\\\b(jr|sr|ii|iii|iv)\\\\b', ''), 
+                REGEXP_REPLACE(LOWER(TRIM(c.draft_player_name)), '\\b(jr|sr|ii|iii|iv)\\b', ''), 
                 '[^a-z0-9]', ''
             ) = cb.norm_combine_name
            AND cb.cb_rn = 1
@@ -182,7 +192,6 @@ def build_prospect_features():
     pos_assigned AS (
         SELECT 
             *,
-            -- OBJECTIVE HEIGHT-BASED POSITION TIERS
             CASE 
                 WHEN height_inches < 77.0 THEN 'Guard'
                 WHEN height_inches >= 77.0 AND height_inches < 81.0 THEN 'Wing'
@@ -243,12 +252,20 @@ def build_prospect_features():
         r.reached_min_threshold_5y,
         r.player_tier_5y,
 
-        -- Production Features
+        -- Production Features (Per 40)
         COALESCE(r.pts_per_40, 0.0) AS pts_per_40,
         COALESCE(r.reb_per_40, 0.0) AS reb_per_40,
         COALESCE(r.ast_per_40, 0.0) AS ast_per_40,
         COALESCE(r.stl_per_40, 0.0) AS stl_per_40,
         COALESCE(r.blk_per_40, 0.0) AS blk_per_40,
+
+        -- Production Features (Per 100)
+        COALESCE(r.pts_per_100, 0.0) AS pts_per_100,
+        COALESCE(r.reb_per_100, 0.0) AS reb_per_100,
+        COALESCE(r.ast_per_100, 0.0) AS ast_per_100,
+        COALESCE(r.stl_per_100, 0.0) AS stl_per_100,
+        COALESCE(r.blk_per_100, 0.0) AS blk_per_100,
+
         COALESCE(r.ts_pct, 0.0) AS ts_pct,
         COALESCE(r.efg_pct, 0.0) AS efg_pct,
         COALESCE(r.ft_pct, 0.0) AS ft_pct,
@@ -304,6 +321,7 @@ def build_prospect_features():
     print("  -> [SUCCESS] Rebuilt clean analytics.prospect_features table!")
     cursor.close()
     connection.close()
+
 
 if __name__ == "__main__":
     build_prospect_features()

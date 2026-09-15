@@ -262,8 +262,6 @@ def export_features_to_parquet():
                     applied_count += 1
             print(f"✅ Successfully applied {applied_count} manual position overrides from '{override_path}'.")
 
-    print("[PROCESS] Patching missing VORP values for redshirt/injury players...")
-
     output_path = "data/processed/features.parquet"
     df.to_parquet(output_path, index=False)
     print(f"  -> [SUCCESS] Exported {len(df)} rows and {len(df.columns)} columns to '{output_path}'")
@@ -276,6 +274,7 @@ def export_features_to_parquet():
 
     cursor.close()
     connection.close()
+
 
 if __name__ == "__main__":
     export_features_to_parquet()
