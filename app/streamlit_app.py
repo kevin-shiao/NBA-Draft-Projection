@@ -314,7 +314,9 @@ elif page == "Player Card":
             # Historical Comps Calculation against 2009-2019 baseline
             ignore_cols = [
                 "draft_player_name", "draft_year", "drafted_team", "is_training_cohort",
-                "vorp_5y", "reached_min_threshold_5y", "player_tier_5y", "overall_pick", "pos_group",
+                "vorp_5y", "reached_min_threshold_5y", "player_tier_5y", "overall_pick", 
+                "pos_group", "nba_position", "pos_bucket", "season", "mp_5y", "seasons_played_5y",
+                "pts_per_40", "reb_per_40", "ast_per_40", "stl_per_40", "blk_per_40"
             ]
             feat_cols = [
                 c for c in features_df.columns
@@ -647,7 +649,7 @@ elif page == "About":
         ### 2. Feature Engineering
         Raw box score numbers are heavily transformed to maximize predictive signal and stabilize variance:
         * **Pace Normalization:** All counting stats (Points, Rebounds, Assists) are converted to a standardized **Per-100 Possessions** baseline (~1.70 possessions/minute) to evaluate slow-paced bigs and run-and-gun guards on equal footing.
-        * **Composite Efficiency Metrics:** Linear stats are replaced with composite vectors like `usage_efficiency_index` (Usage % × True Shooting %) to reward high-volume scorers who maintain efficiency.
+        * **Composite Efficiency Metrics:** Linear stats are replaced with composite vectors like `usg_bpm_interaction` (Usage % × College BPM) to reward high-volume offensive engines who maintain elite efficiency.
         * **Empirical Bayes Shrinkage:** Low-volume shooting metrics (3P% and FT%) are shrunk toward the mean to prevent small sample sizes from tricking the model.
         * **Positional Z-Scores & Overrides:** Players are algorithmically bucketed into Guard, Wing, or Big based on combine heights, with production evaluated relative to their peers (`bpm_pos_zscore`). Known outliers (e.g., tall playmakers like Cade Cunningham) are managed via a localized CSV override dictionary.
 
