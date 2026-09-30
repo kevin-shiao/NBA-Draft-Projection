@@ -227,8 +227,9 @@ def build_prospect_features():
         FROM pos_assigned
     ),
 
-    combine_medians AS (
+combine_medians AS (
         SELECT 
+            pos_group,
             MEDIAN(height_inches) AS med_height,
             MEDIAN(wingspan_inches) AS med_wingspan,
             MEDIAN(standing_reach_inches) AS med_standing_reach,
@@ -236,6 +237,7 @@ def build_prospect_features():
             MEDIAN(body_fat_pct) AS med_body_fat,
             MEDIAN(age_at_draft) AS med_age
         FROM pos_stats
+        GROUP BY pos_group
     )
 
     SELECT 
@@ -314,7 +316,7 @@ def build_prospect_features():
         CASE WHEN r.body_fat_pct IS NULL THEN 1 ELSE 0 END AS body_fat_was_missing
 
     FROM pos_stats r
-    CROSS JOIN combine_medians m;
+    LEFT JOIN combine_medians m ON r.pos_group = m.pos_group;
     """
 
     cursor.execute(feature_table_sql)

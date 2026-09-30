@@ -2,15 +2,15 @@
     "lgb_params": {
         "objective": "regression",
         "metric": "rmse",
-        "num_leaves": 30,
-        "min_child_samples": 29,
-        "learning_rate": 0.0456052237314629,
-        "colsample_bytree": 0.85759131664474,
-        "subsample": 0.8660386233617606,
+        "num_leaves": 23,
+        "min_child_samples": 15,
+        "learning_rate": 0.006270480835222941,
+        "colsample_bytree": 0.8446773964190386,
+        "subsample": 0.844239477248055,
         "verbosity": -1,
         "random_state": 42
     },
-    "ridge_alpha": 18.599828063381146,
-    "lgb_weight": 0.3846825651828984,
-    "ridge_weight": 0.6153174348171015
+    "ridge_alpha": 49.46376324179752,
+    "lgb_weight": 0.46082999995329793,
+    "ridge_weight": 0.5391700000467021
 }

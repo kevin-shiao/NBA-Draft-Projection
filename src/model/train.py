@@ -149,7 +149,6 @@ def run_training_pipeline():
     groups = train_df["draft_year"].values
 
     # 4. Load Tuned Hyperparameters (or fallback to default baseline)
-    # 4. Load Tuned Hyperparameters (or fallback to default baseline)
     best_params_path = "models/best_params.json"
     if os.path.exists(best_params_path):
         with open(best_params_path, "r") as f:
